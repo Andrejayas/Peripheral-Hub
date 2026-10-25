@@ -1,0 +1,8 @@
+{
+  "headset": {
+    "last_charge_timestamp": null,
+    "usage_hours_since_charge": 0.0,
+    "charge_confirmed": false,
+    "battery_life_hours": 16.0
+  }
+}
