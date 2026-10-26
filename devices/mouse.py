@@ -116,7 +116,7 @@ def _find_active_mouse_endpoint() -> Tuple[Optional[bytes], Optional[int]]:
                     h = k32.CreateFileW(formatted, 0xC0000000, 3, None, 3, 0, None)
                     if h != -1 and h != 0:
                         k32.CloseHandle(h)
-                        logger.info("Found active mouse endpoint (PID 0x%04X): %s", pid, formatted)
+                        logger.debug("Found active mouse endpoint (PID 0x%04X): %s", pid, formatted)
                         return formatted.encode("ascii"), pid
     except Exception as exc:
         logger.debug("Failed registry endpoint scan: %s", exc)

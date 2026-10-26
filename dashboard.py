@@ -27,6 +27,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 from pathlib import Path
 from typing import Optional, Callable, Dict, Any, Tuple, List
+from PIL import Image, ImageTk
 
 logger = logging.getLogger(__name__)
 
@@ -292,11 +293,33 @@ class Dashboard:
         # Mouse controls
         self._dpi_buttons: Dict[int, _DpiPill] = {}
 
+        # Noir M1 Nex official assets
+        self._noir_img_online: Optional[ImageTk.PhotoImage] = None
+        self._noir_img_offline: Optional[ImageTk.PhotoImage] = None
+        self._load_noir_assets()
+
         # Connect button event callback for live physical feedback
         if self._mouse:
             self._mouse.set_button_event_callback(self._on_mouse_button_press)
 
         self._build()
+
+    def _load_noir_assets(self) -> None:
+        """Pre-load authentic Noir M1 Nex mouse graphics extracted from official software."""
+        try:
+            base_noir = Path(__file__).parent / "assets" / "noir" / "1HomePage"
+            p_on = base_noir / "dev1online.png"
+            p_off = base_noir / "dev1offline.png"
+            if p_on.exists():
+                im_on = Image.open(p_on)
+                im_on.thumbnail((90, 115), Image.Resampling.LANCZOS)
+                self._noir_img_online = ImageTk.PhotoImage(im_on)
+            if p_off.exists():
+                im_off = Image.open(p_off)
+                im_off.thumbnail((90, 115), Image.Resampling.LANCZOS)
+                self._noir_img_offline = ImageTk.PhotoImage(im_off)
+        except Exception as exc:
+            logger.debug("Failed loading Noir mouse assets: %s", exc)
 
     # ------------------------------------------------------------------
     # Window lifecycle & positioning
@@ -547,24 +570,43 @@ class Dashboard:
         page = tk.Frame(self._content_area, bg=BG)
         self._tab_pages["mouse"] = page
 
-        # 1. Device Status Card
-        card_stat = tk.Frame(page, bg=CARD, padx=14, pady=10)
+        # 1. Device Status Card (Coucou-style with Official Noir M1 Nex Asset)
+        card_stat = tk.Frame(page, bg=CARD, padx=14, pady=12)
         card_stat.pack(fill="x", pady=(0, 8))
 
-        row1 = tk.Frame(card_stat, bg=CARD)
+        stat_body = tk.Frame(card_stat, bg=CARD)
+        stat_body.pack(fill="x")
+
+        # Left Column: Official 3D Render of Noir M1 Nex Mouse
+        self._mouse_img_lbl = tk.Label(stat_body, bg=CARD)
+        if self._noir_img_offline:
+            self._mouse_img_lbl.configure(image=self._noir_img_offline)
+        self._mouse_img_lbl.pack(side="left", padx=(0, 16))
+
+        # Right Column: Telemetry & Info
+        info_col = tk.Frame(stat_body, bg=CARD)
+        info_col.pack(side="left", fill="both", expand=True)
+
+        row1 = tk.Frame(info_col, bg=CARD)
         row1.pack(fill="x")
-        tk.Label(row1, text="Noir M1 Nex", font=("Segoe UI", 11, "bold"),
+        tk.Label(row1, text="Noir M1 Nex", font=("Segoe UI", 12, "bold"),
                  fg=TEXT, bg=CARD).pack(side="left")
         self._mouse_status_lbl = tk.Label(row1, text="● Disconnected",
                                           font=("Segoe UI", 9, "bold"),
                                           fg=RED, bg=CARD)
         self._mouse_status_lbl.pack(side="right")
 
+        # Hardware Specifications Sub-badge
+        specs_row = tk.Frame(info_col, bg=CARD)
+        specs_row.pack(fill="x", pady=(3, 6))
+        tk.Label(specs_row, text="PixArt PAW3311 • Beken BK2535 • 70g Esports Ultralight",
+                 font=("Segoe UI", 8), fg=DIM, bg=CARD).pack(side="left")
+
         # Battery Row
-        bat_row = tk.Frame(card_stat, bg=CARD)
-        bat_row.pack(fill="x", pady=(8, 2))
+        bat_row = tk.Frame(info_col, bg=CARD)
+        bat_row.pack(fill="x", pady=(4, 2))
         tk.Label(bat_row, text="Battery", font=("Segoe UI", 8),
-                 fg=TEXT_MUTED, bg=CARD, width=10, anchor="w").pack(side="left")
+                 fg=TEXT_MUTED, bg=CARD, width=8, anchor="w").pack(side="left")
         self._mouse_bat_bar = _BatteryBar(bat_row, width=170)
         self._mouse_bat_bar.pack(side="left", padx=6)
         self._mouse_bat_lbl = tk.Label(bat_row, text="N/A",
@@ -656,7 +698,7 @@ class Dashboard:
         )
         self._mouse_btn_test_lbl.pack(fill="x", pady=(6, 2))
 
-        # 4. Mouse RGB Lighting Card
+        # 4. Mouse DPI LED / Effect Card (With Official Noir 14 Preset Colors)
         card_rgb = tk.Frame(page, bg=CARD, padx=14, pady=10)
         card_rgb.pack(fill="x", pady=4)
 
@@ -675,24 +717,39 @@ class Dashboard:
         m_rgb_menu.pack(side="right")
         m_rgb_menu.bind("<<ComboboxSelected>>", lambda e: self._on_mouse_rgb_mode_change(self._mouse_rgb_mode_var.get()))
 
-        # Color dots
-        dots_row = tk.Frame(card_rgb, bg=CARD)
-        dots_row.pack(fill="x", pady=(6, 2))
-        tk.Label(dots_row, text="Preset Color", font=("Segoe UI", 8),
+        # Informational Banner: Noir M1 Nex Hardware Architecture
+        info_banner = tk.Frame(card_rgb, bg=BORDER, padx=10, pady=6)
+        info_banner.pack(fill="x", pady=(8, 8))
+        tk.Label(
+            info_banner,
+            text="ℹ Indikator LED DPI Noir M1 Nex terletak pada roda scroll & sensor internal (esports ultralight).\n"
+                 "Warna yang dipilih akan diprogram langsung ke chip flash hardware mouse secara instan.",
+            font=("Segoe UI", 8),
+            fg=TEXT_MUTED, bg=BORDER, justify="left"
+        ).pack(anchor="w")
+
+        # Official Noir 14 Color Palette extracted from driver
+        dots_row1 = tk.Frame(card_rgb, bg=CARD)
+        dots_row1.pack(fill="x", pady=(2, 2))
+        tk.Label(dots_row1, text="Noir Preset:", font=("Segoe UI", 8),
                  fg=TEXT_MUTED, bg=CARD, width=12, anchor="w").pack(side="left")
 
-        colors = [
-            ("#ff2a2a", "Red"),
-            ("#2266ff", "Blue"),
-            ("#00ff44", "Green"),
-            ("#aa22ff", "Purple"),
-            ("#00eeff", "Cyan"),
-            ("#ff8800", "Orange"),
-            ("#ffffff", "White"),
-        ]
-        for hex_code, name in colors:
-            dot = tk.Label(dots_row, text="●", font=("Segoe UI", 12, "bold"),
-                            fg=hex_code, bg=CARD, cursor="hand2", padx=3)
+        noir_colors_1 = ["#ff0000", "#00ffff", "#00ff00", "#ff00ff", "#ffff00", "#ff5000", "#0000ff"]
+        noir_colors_2 = ["#e3007f", "#2ea6df", "#601985", "#ffffff", "#8bb224", "#ff9b33", "#d071ad"]
+
+        for hex_code in noir_colors_1:
+            dot = tk.Label(dots_row1, text="●", font=("Segoe UI", 13, "bold"),
+                           fg=hex_code, bg=CARD, cursor="hand2", padx=3)
+            dot.pack(side="left")
+            dot.bind("<Button-1>", lambda e, c=hex_code: self._on_mouse_color(c))
+
+        dots_row2 = tk.Frame(card_rgb, bg=CARD)
+        dots_row2.pack(fill="x", pady=(0, 4))
+        tk.Label(dots_row2, text="", font=("Segoe UI", 8),
+                 fg=TEXT_MUTED, bg=CARD, width=12).pack(side="left")
+        for hex_code in noir_colors_2:
+            dot = tk.Label(dots_row2, text="●", font=("Segoe UI", 13, "bold"),
+                           fg=hex_code, bg=CARD, cursor="hand2", padx=3)
             dot.pack(side="left")
             dot.bind("<Button-1>", lambda e, c=hex_code: self._on_mouse_color(c))
 
@@ -708,10 +765,18 @@ class Dashboard:
     def _on_mouse_color(self, hex_code: str) -> None:
         """Called when user clicks a preset color dot: updates LED color independently without changing DPI."""
         if self._mouse:
-            self._mouse.set_dpi_color(hex_code)
+            threading.Thread(target=self._mouse.set_dpi_color, args=(hex_code,),
+                             daemon=True, name="mouse-color-set").start()
         if hasattr(self, "_mouse_active_color_lbl"):
             self._mouse_active_color_lbl.configure(text=f"● {hex_code.upper()}", fg=hex_code)
         logger.info("Mouse custom LED color selected: %s", hex_code)
+
+    def _on_mouse_rgb_mode_change(self, mode_name: str) -> None:
+        if self._mouse:
+            color = self._mouse.get_status().get("current_color", "#ff2a2a")
+            threading.Thread(target=self._mouse.set_rgb_effect, args=(mode_name, color),
+                             daemon=True, name="mouse-rgb-mode").start()
+        logger.info("Mouse RGB mode changed: %s", mode_name)
 
     def _on_btn_mapping_change(self, btn_idx: int, action: str) -> None:
         if self._mouse:
@@ -1078,8 +1143,12 @@ class Dashboard:
 
         if online:
             self._mouse_status_lbl.configure(text=f"● Connected ({conn_type})", fg=GREEN)
+            if hasattr(self, "_mouse_img_lbl") and self._noir_img_online:
+                self._mouse_img_lbl.configure(image=self._noir_img_online)
         else:
             self._mouse_status_lbl.configure(text="● Disconnected", fg=RED)
+            if hasattr(self, "_mouse_img_lbl") and self._noir_img_offline:
+                self._mouse_img_lbl.configure(image=self._noir_img_offline)
 
         pct = st.get("battery_level")
         self._mouse_bat_bar.set_value(pct)
