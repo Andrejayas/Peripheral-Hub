@@ -28,6 +28,27 @@ PID_WIRED    = 0xF500
 
 DPI_STAGES = [400, 800, 1200, 2400, 3200, 5000, 10000, 19000]
 
+# Hardware DPI stage to physical LED preset color in Noir M1 Nex
+DPI_STAGE_TO_COLOR = {
+    400:   "#ff2a2a",  # Red
+    800:   "#2266ff",  # Blue
+    1200:  "#00ff44",  # Green
+    2400:  "#aa22ff",  # Purple
+    3200:  "#00eeff",  # Cyan
+    5000:  "#ff8800",  # Orange
+    10000: "#ffffff",  # White
+}
+
+COLOR_TO_DPI_STAGE = {
+    "#ff2a2a": 400,
+    "#2266ff": 800,
+    "#00ff44": 1200,
+    "#aa22ff": 2400,
+    "#00eeff": 3200,
+    "#ff8800": 5000,
+    "#ffffff": 10000,
+}
+
 # Mapping DPI stage to Windows mouse pointer speed (1 - 20 scale, 10 is default)
 # This provides instant, unmistakable tactile cursor speed feedback on screen
 DPI_TO_WINDOWS_SPEED = {
@@ -225,8 +246,11 @@ class NoirM1Nex:
             elif cmd_id in (0x08, 0x0E, 0x0F) and data_len >= 1:
                 stage = data_bytes[0]
                 if stage < len(DPI_STAGES):
+                    dpi = DPI_STAGES[stage]
                     with self._lock:
-                        self.current_dpi = DPI_STAGES[stage]
+                        self.current_dpi = dpi
+                        if dpi in DPI_STAGE_TO_COLOR:
+                            self.current_color = DPI_STAGE_TO_COLOR[dpi]
         except Exception as exc:
             logger.debug("Mouse callback processing error: %s", exc)
 
@@ -331,6 +355,8 @@ class NoirM1Nex:
 
         with self._lock:
             self.current_dpi = dpi
+            if dpi in DPI_STAGE_TO_COLOR:
+                self.current_color = DPI_STAGE_TO_COLOR[dpi]
         return True
 
     def set_button_mapping(self, btn_index: int, function_name: str) -> bool:
@@ -341,11 +367,25 @@ class NoirM1Nex:
         logger.info("Setting Noir M1 Nex button %d mapping to: %s", btn_index, function_name)
         return True
 
+    def set_button_event_callback(self, cb) -> None:
+        """Register UI callback for live side-button press events."""
+        if self._hook_mgr:
+            self._hook_mgr.set_callback(cb)
+
     def set_dpi_color(self, color_hex: str) -> bool:
-        """Set the active DPI LED color for the current stage."""
+        """
+        Set the active DPI LED color.
+        Directly switches the matching DPI stage in Noir M1 Nex hardware,
+        physically changing the LED color on the mouse shell and updating sensitivity.
+        """
+        color_lower = color_hex.lower()
+        target_dpi = COLOR_TO_DPI_STAGE.get(color_lower)
         with self._lock:
-            self.current_color = color_hex
-        logger.info("Noir M1 Nex DPI color set to %s", color_hex)
+            self.current_color = color_lower
+
+        if target_dpi is not None:
+            self.set_dpi(target_dpi)
+        logger.info("Noir M1 Nex DPI color set to %s (Hardware DPI: %s)", color_hex, target_dpi)
         return True
 
     def set_rgb_effect(self, mode_name: str, color_hex: str = "#ff2a2a") -> bool:

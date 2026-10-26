@@ -34,14 +34,19 @@ VK_XBUTTON2 = 0x06  # Mouse Button 5 (Forward)
 MOUSEEVENTF_LEFTDOWN = 0x0002
 MOUSEEVENTF_LEFTUP   = 0x0004
 
-VK_LCONTROL    = 0xA2
-VK_SPACE       = 0x20
-VK_VOLUME_MUTE = 0xAD
-VK_VOLUME_DOWN = 0xAE
-VK_VOLUME_UP   = 0xAF
-VK_LWIN        = 0x5B
-VK_LSHIFT      = 0xA0
-VK_S           = 0x53
+VK_LCONTROL          = 0xA2
+VK_SPACE             = 0x20
+VK_VOLUME_MUTE       = 0xAD
+VK_VOLUME_DOWN       = 0xAE
+VK_VOLUME_UP         = 0xAF
+VK_MEDIA_NEXT_TRACK  = 0xB0
+VK_MEDIA_PREV_TRACK  = 0xB1
+VK_MEDIA_PLAY_PAUSE  = 0xB3
+VK_BROWSER_BACK      = 0xA6
+VK_BROWSER_FORWARD   = 0xA7
+VK_LWIN              = 0x5B
+VK_LSHIFT            = 0xA0
+VK_S                 = 0x53
 
 KEYEVENTF_KEYUP = 0x0002
 
@@ -58,6 +63,7 @@ class MouseHookManager:
         self._mouse_driver = mouse_driver
         self._running = False
         self._thread: Optional[threading.Thread] = None
+        self._callback = None
 
         # Button configurations
         # button 4 = XBUTTON1 (Back), button 5 = XBUTTON2 (Forward)
@@ -83,6 +89,10 @@ class MouseHookManager:
         elif mouse_driver and cls._instance._mouse_driver is None:
             cls._instance._mouse_driver = mouse_driver
         return cls._instance
+
+    def set_callback(self, callback) -> None:
+        """Register a callback for button press events: cb(btn_idx: int, action: str)."""
+        self._callback = callback
 
     def set_mapping(self, btn_index: int, action: str) -> None:
         """Update button mapping: btn_index is 4 or 5."""
@@ -138,10 +148,26 @@ class MouseHookManager:
 
     def _on_button_event(self, btn_idx: int, is_down: bool) -> None:
         action = self._mapping.get(btn_idx, "Default")
-        if "Default" in action or action in ("Browser Forward", "Browser Backward"):
+
+        # Notify UI callback immediately when button is pressed
+        if is_down and self._callback:
+            try:
+                self._callback(btn_idx, action)
+            except Exception as exc:
+                logger.debug("Button callback error: %s", exc)
+
+        if "Default" in action:
             return
 
-        if action == "Double Click":
+        if action == "Browser Forward":
+            if is_down:
+                self._send_key(VK_BROWSER_FORWARD)
+
+        elif action == "Browser Backward":
+            if is_down:
+                self._send_key(VK_BROWSER_BACK)
+
+        elif action == "Double Click":
             if is_down:
                 threading.Thread(target=self._send_double_click, daemon=True).start()
 
@@ -167,6 +193,18 @@ class MouseHookManager:
         elif action == "Mute":
             if is_down:
                 self._send_key(VK_VOLUME_MUTE)
+
+        elif action == "Play/Pause":
+            if is_down:
+                self._send_key(VK_MEDIA_PLAY_PAUSE)
+
+        elif action == "Next Track":
+            if is_down:
+                self._send_key(VK_MEDIA_NEXT_TRACK)
+
+        elif action == "Previous Track":
+            if is_down:
+                self._send_key(VK_MEDIA_PREV_TRACK)
 
         elif action == "Sniper 400 DPI":
             if is_down:
