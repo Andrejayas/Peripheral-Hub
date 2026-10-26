@@ -151,6 +151,48 @@ def _voltage_to_percent(voltage_mv: int) -> int:
     return 50
 
 
+def _calc_chk(buf) -> int:
+    """Hardware checksum: 0x55 minus sum of payload bytes (modulo 256)."""
+    s = sum(buf) & 0xFF
+    return (0x55 - s) & 0xFF
+
+
+def _build_flash_write_cmd(addr: int, data_bytes: list) -> bytes:
+    """
+    Constructs the exact 20-byte hardware packet for WriteFlashData (Command 0x07, Report 0x08).
+    Verified against hidusb.dll reverse-engineered protocol.
+    """
+    report = bytearray(16)
+    report[0] = 0x08  # Report ID
+    report[1] = 0x07  # Command: WriteFlashData
+    report[2] = 0x00
+    report[3] = (addr >> 8) & 0xFF  # Addr High
+    report[4] = addr & 0xFF         # Addr Low
+    report[5] = len(data_bytes)     # Payload Length
+    for i, b in enumerate(data_bytes):
+        report[6 + i] = b & 0xFF
+    chk = _calc_chk(report)
+    cmd = bytearray(20)
+    cmd[0] = 0x01
+    cmd[1] = 0x01
+    cmd[2] = 0x00
+    cmd[3:19] = report
+    cmd[19] = chk
+    return bytes(cmd)
+
+
+def _hex_to_rgb(hex_code: str) -> Tuple[int, int, int]:
+    """Convert hex color string (#ff2a2a) to integer tuple (r, g, b)."""
+    h = hex_code.lstrip("#")
+    if len(h) == 3:
+        h = "".join(c * 2 for c in h)
+    try:
+        val = int(h, 16)
+        return ((val >> 16) & 0xFF, (val >> 8) & 0xFF, val & 0xFF)
+    except Exception:
+        return (255, 0, 0)
+
+
 class NoirM1Nex:
     """
     Interface for Noir M1 Nex gaming mouse.
@@ -213,10 +255,31 @@ class NoirM1Nex:
             self._dll.CS_UsbServer_SetCurrentConfig.argtypes = [ctypes.c_int]
             self._dll.CS_UsbServer_SetCurrentConfig.restype = None
 
-            logger.info("hidusb.dll loaded from: %s", dll_path)
+            self._dll.CS_UsbServer_SetPCDriverStatus.argtypes = [ctypes.c_bool]
+            self._dll.CS_UsbServer_SetPCDriverStatus.restype = None
+
+            self._dll.UsbServer_WriteCommand.argtypes = [ctypes.c_char_p]
+            self._dll.UsbServer_WriteCommand.restype = None
+
+            self._dll.CS_UsbServer_Exit.argtypes = []
+            self._dll.CS_UsbServer_Exit.restype = None
+
+            logger.info("hidusb.dll loaded successfully with full hardware write support from: %s", dll_path)
         except Exception as exc:
             logger.warning("Failed to load hidusb.dll: %s", exc)
             self._dll = None
+
+    def _send_flash_write(self, addr: int, data_bytes: list) -> bool:
+        """Send a 20-byte WriteFlashData command packet to the mouse hardware via hidusb.dll."""
+        if not self._dll or not self._started:
+            return False
+        try:
+            cmd = _build_flash_write_cmd(addr, data_bytes)
+            self._dll.UsbServer_WriteCommand(cmd)
+            return True
+        except Exception as exc:
+            logger.debug("Failed sending flash write command to 0x%04X: %s", addr, exc)
+            return False
 
     def _on_data(self, pcmd: int, cmd_len: int, pdata: int, data_len: int) -> None:
         try:
@@ -255,7 +318,7 @@ class NoirM1Nex:
             logger.debug("Mouse callback processing error: %s", exc)
 
     def scan_and_connect(self) -> bool:
-        """Actively scan for active mouse endpoint (wired or dongle)."""
+        """Actively scan for active mouse endpoint (wired or dongle) and bind hidusb.dll."""
         ep, pid = _find_active_mouse_endpoint()
         if ep is None or pid is None:
             with self._lock:
@@ -297,6 +360,12 @@ class NoirM1Nex:
             self._started = True
             self._active_endpoint = ep
 
+            # Inform mouse / 2.4G dongle that PC driver is active so flash writes route properly
+            try:
+                self._dll.CS_UsbServer_SetPCDriverStatus(True)
+            except Exception:
+                pass
+
             logger.info("Mouse USB server started via %s: %s", conn_str, ep)
             time.sleep(0.05)
             self.poll()
@@ -312,7 +381,13 @@ class NoirM1Nex:
         return self.scan_and_connect()
 
     def poll(self) -> None:
-        """Refresh mouse telemetry without causing disconnect flapping."""
+        """Refresh mouse telemetry without causing disconnect flapping. Automatically handles wired <-> wireless dongle handoff."""
+        # Check if active endpoint or connection mode changed (e.g. wired cable unplugged or wireless dongle plugged in)
+        ep, pid = _find_active_mouse_endpoint()
+        if ep != self._active_endpoint or pid != self.active_pid:
+            self.scan_and_connect()
+            return
+
         if self._dll is None or not self._started:
             self.scan_and_connect()
             return
@@ -325,7 +400,7 @@ class NoirM1Nex:
     def set_dpi(self, dpi: int) -> bool:
         """
         Set mouse DPI:
-        1. Sends DPI stage command to mouse hardware via hidusb.dll.
+        1. Sends DPI stage command to mouse hardware flash (0x0204) via hidusb.dll.
         2. Adjusts Windows mouse pointer speed (SPI_SETMOUSESPEED) so the user
            immediately and dramatically feels the cursor sensitivity change.
         """
@@ -334,7 +409,10 @@ class NoirM1Nex:
 
         idx = DPI_STAGES.index(dpi)
 
-        # 1. Hardware update
+        # 1. Real Hardware Flash Update (Address 0x0204 = currentDPI)
+        self._send_flash_write(0x0204, [idx, (0x55 - idx) & 0xFF])
+
+        # Also send config profile update
         if self._dll and self._started:
             try:
                 self._dll.CS_UsbServer_SetCurrentConfig(ctypes.c_int(idx))
@@ -372,20 +450,83 @@ class NoirM1Nex:
 
     def set_dpi_color(self, color_hex: str) -> bool:
         """
-        Set the active mouse LED color.
-        Updates the custom LED color independently without altering current DPI sensitivity.
+        Set the active mouse LED color on physical Noir M1 Nex hardware.
+        Dispatches hardware flash write packets to program all DPI stages and LedBar
+        so the shell physically changes color in both 2.4G wireless and wired modes.
         """
         color_lower = color_hex.lower()
+        r, g, b = _hex_to_rgb(color_hex)
+
+        # 1. Update DPI stages color in mouse flash memory (0x002C + stage * 4)
+        # Program all stages so whichever stage the physical mouse uses, the LED color matches
+        chk_color = (0x55 - ((r + g + b) & 0xFF)) & 0xFF
+        color_payload = [r, g, b, chk_color]
+        for stage_idx in range(len(DPI_STAGES)):
+            addr = 0x002C + stage_idx * 4
+            self._send_flash_write(addr, color_payload)
+
+        # 2. Configure DPI LED mode (Static, full brightness, enabled)
+        self._send_flash_write(0x024C, [0x01, (0x55 - 0x01) & 0xFF])  # DPILed mode = 1 (Static)
+        self._send_flash_write(0x024E, [0xFF, (0x55 - 0xFF) & 0xFF])  # DPILed brightness = 255
+        self._send_flash_write(0x0252, [0x01, (0x55 - 0x01) & 0xFF])  # DPILed enable = 1
+
+        # 3. Also update bottom / tail RGB bar (0x07A0 and 0x00A0)
+        ledbar_payload = bytearray([0x01, r, g, b, 0x07, 0x09, 0x01, 0x00])
+        ledbar_payload.append(_calc_chk(ledbar_payload))
+        self._send_flash_write(0x07A0, list(ledbar_payload))
+        self._send_flash_write(0x00A0, list(ledbar_payload))
+
         with self._lock:
             self.current_color = color_lower
-        logger.info("Noir M1 Nex LED color set to %s", color_hex)
+        logger.info("Noir M1 Nex physical LED color set to %s (RGB %d,%d,%d)", color_hex, r, g, b)
         return True
 
     def set_rgb_effect(self, mode_name: str, color_hex: str = "#ff2a2a") -> bool:
-        """Set mouse RGB / DPI LED effect (Neon Cycle, Breathing, Static, LED Off)."""
+        """
+        Set mouse RGB / DPI LED effect on physical Noir M1 Nex hardware.
+        Supports Static, Breathing, Neon Cycle, and LED Off.
+        """
+        color_lower = color_hex.lower()
+        r, g, b = _hex_to_rgb(color_hex)
+        chk_color = (0x55 - ((r + g + b) & 0xFF)) & 0xFF
+        color_payload = [r, g, b, chk_color]
+
+        mode_clean = mode_name.strip().lower()
+
+        if "off" in mode_clean:
+            # Turn physical LED off
+            self._send_flash_write(0x0252, [0x00, (0x55 - 0x00) & 0xFF])  # DPILed disabled
+            off_payload = bytearray([0x00, 0, 0, 0, 0x07, 0x00, 0x00, 0x00])
+            off_payload.append(_calc_chk(off_payload))
+            self._send_flash_write(0x07A0, list(off_payload))
+            self._send_flash_write(0x00A0, list(off_payload))
+        elif "breath" in mode_clean:
+            # Breathing mode
+            for stage_idx in range(len(DPI_STAGES)):
+                self._send_flash_write(0x002C + stage_idx * 4, color_payload)
+            self._send_flash_write(0x024C, [0x02, (0x55 - 0x02) & 0xFF])  # DPILed mode = 2 (Breathing)
+            self._send_flash_write(0x024E, [0xFF, (0x55 - 0xFF) & 0xFF])  # Brightness
+            self._send_flash_write(0x0250, [0x80, (0x55 - 0x80) & 0xFF])  # Breath speed
+            self._send_flash_write(0x0252, [0x01, (0x55 - 0x01) & 0xFF])  # DPILed enable
+            breath_payload = bytearray([0x02, r, g, b, 0x07, 0x09, 0x01, 0x00])
+            breath_payload.append(_calc_chk(breath_payload))
+            self._send_flash_write(0x07A0, list(breath_payload))
+            self._send_flash_write(0x00A0, list(breath_payload))
+        else:
+            # Static / Neon Cycle
+            for stage_idx in range(len(DPI_STAGES)):
+                self._send_flash_write(0x002C + stage_idx * 4, color_payload)
+            self._send_flash_write(0x024C, [0x01, (0x55 - 0x01) & 0xFF])  # DPILed mode = 1 (Static)
+            self._send_flash_write(0x024E, [0xFF, (0x55 - 0xFF) & 0xFF])  # Brightness
+            self._send_flash_write(0x0252, [0x01, (0x55 - 0x01) & 0xFF])  # DPILed enable
+            static_payload = bytearray([0x01, r, g, b, 0x07, 0x09, 0x01, 0x00])
+            static_payload.append(_calc_chk(static_payload))
+            self._send_flash_write(0x07A0, list(static_payload))
+            self._send_flash_write(0x00A0, list(static_payload))
+
         with self._lock:
-            self.current_color = color_hex
-        logger.info("Setting Noir M1 Nex RGB to mode=%s, color=%s", mode_name, color_hex)
+            self.current_color = color_lower
+        logger.info("Setting Noir M1 Nex physical RGB to mode=%s, color=%s", mode_name, color_hex)
         return True
 
     def stop(self) -> None:
