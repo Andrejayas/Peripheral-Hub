@@ -199,7 +199,7 @@ class PeripheralHub:
                 eq_apo=self._eq_apo,
                 fxsound=self._fxsound,
                 on_close=self._on_dashboard_close,
-                on_scan=self._update_tray_battery,
+                on_scan=self._rescan_hardware,
             )
             logger.info("Dashboard initialized.")
         except Exception as exc:
@@ -289,9 +289,30 @@ class PeripheralHub:
             self._tk_root.after(0, self._dashboard.show)
 
     def _on_tray_scan_request(self) -> None:
-        """Called from tray thread — schedule dashboard.scan_all() on main thread."""
-        if self._tk_root and self._dashboard:
-            self._tk_root.after(0, self._dashboard.scan_all)
+        """Called from tray thread — schedule hardware re-scan on daemon thread."""
+        threading.Thread(target=self._rescan_hardware, daemon=True, name="tray-rescan").start()
+
+    def _rescan_hardware(self) -> None:
+        """Actively re-scans USB and HID ports for all devices."""
+        logger.info("Starting active hardware re-scan...")
+        if self._mouse:
+            try:
+                self._mouse.scan_and_connect()
+            except Exception as exc:
+                logger.debug("Mouse re-scan error: %s", exc)
+        if self._keyboard:
+            try:
+                self._keyboard.connect()
+            except Exception as exc:
+                logger.debug("Keyboard re-scan error: %s", exc)
+        if self._headset:
+            try:
+                self._headset.detect()
+            except Exception as exc:
+                logger.debug("Headset re-scan error: %s", exc)
+        self._update_tray_battery()
+        if self._dashboard and self._tk_root:
+            self._tk_root.after(0, self._dashboard.refresh)
 
     def _on_dashboard_close(self) -> None:
         logger.debug("Dashboard closed.")

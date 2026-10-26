@@ -355,8 +355,6 @@ class NoirM1Nex:
 
         with self._lock:
             self.current_dpi = dpi
-            if dpi in DPI_STAGE_TO_COLOR:
-                self.current_color = DPI_STAGE_TO_COLOR[dpi]
         return True
 
     def set_button_mapping(self, btn_index: int, function_name: str) -> bool:
@@ -374,18 +372,13 @@ class NoirM1Nex:
 
     def set_dpi_color(self, color_hex: str) -> bool:
         """
-        Set the active DPI LED color.
-        Directly switches the matching DPI stage in Noir M1 Nex hardware,
-        physically changing the LED color on the mouse shell and updating sensitivity.
+        Set the active mouse LED color.
+        Updates the custom LED color independently without altering current DPI sensitivity.
         """
         color_lower = color_hex.lower()
-        target_dpi = COLOR_TO_DPI_STAGE.get(color_lower)
         with self._lock:
             self.current_color = color_lower
-
-        if target_dpi is not None:
-            self.set_dpi(target_dpi)
-        logger.info("Noir M1 Nex DPI color set to %s (Hardware DPI: %s)", color_hex, target_dpi)
+        logger.info("Noir M1 Nex LED color set to %s", color_hex)
         return True
 
     def set_rgb_effect(self, mode_name: str, color_hex: str = "#ff2a2a") -> bool:
