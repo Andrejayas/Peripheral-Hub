@@ -27,11 +27,21 @@ _PROFILES: Dict[str, List[str]] = {
         "# Profile: FPS Step Booster",
         "# Boost footstep frequencies for competitive FPS",
         "Preamp: -3 dB",
-        "Filter 1: ON PK Fc 316 Hz Gain 3.9 dB Q 1.41",
-        "Filter 2: ON PK Fc 1288 Hz Gain 6.7 dB Q 1.41",
-        "Filter 3: ON PK Fc 2432 Hz Gain 6.6 dB Q 1.41",
-        "Filter 4: ON PK Fc 4140 Hz Gain 4.5 dB Q 1.41",
-        "Filter 5: ON PK Fc 6800 Hz Gain 5.4 dB Q 1.41",
+        "Filter 1: ON PK Fc 316 Hz Gain 4.5 dB Q 1.41",
+        "Filter 2: ON PK Fc 1288 Hz Gain 7.5 dB Q 1.41",
+        "Filter 3: ON PK Fc 2432 Hz Gain 7.5 dB Q 1.41",
+        "Filter 4: ON PK Fc 4140 Hz Gain 5.5 dB Q 1.41",
+        "Filter 5: ON PK Fc 6800 Hz Gain 6.0 dB Q 1.41",
+    ],
+    "bass_boost": [
+        "# Profile: Bass Boost",
+        "# Heavy low-end impact for EDM and explosion immersion",
+        "Preamp: -4 dB",
+        "Filter 1: ON PK Fc 60 Hz Gain 9.0 dB Q 1.0",
+        "Filter 2: ON PK Fc 100 Hz Gain 7.5 dB Q 1.2",
+        "Filter 3: ON PK Fc 150 Hz Gain 5.0 dB Q 1.2",
+        "Filter 4: ON PK Fc 2500 Hz Gain 2.0 dB Q 1.0",
+        "Filter 5: ON PK Fc 8000 Hz Gain 3.0 dB Q 1.0",
     ],
     "music_movie": [
         "# Profile: Music / Movie",
@@ -52,19 +62,20 @@ _PROFILES: Dict[str, List[str]] = {
     "gaming_surround": [
         "# Profile: Gaming Surround",
         "# Mid-range and high-frequency boost for positional audio",
-        "Preamp: -2 dB",
-        "Filter 1: ON PK Fc 300 Hz Gain 2.0 dB Q 1.00",
-        "Filter 2: ON PK Fc 900 Hz Gain 3.0 dB Q 1.00",
-        "Filter 3: ON PK Fc 2500 Hz Gain 4.0 dB Q 1.41",
-        "Filter 4: ON PK Fc 5000 Hz Gain 3.5 dB Q 1.41",
-        "Filter 5: ON PK Fc 10000 Hz Gain 2.5 dB Q 1.00",
+        "Preamp: -3 dB",
+        "Filter 1: ON PK Fc 300 Hz Gain 2.5 dB Q 1.00",
+        "Filter 2: ON PK Fc 900 Hz Gain 3.5 dB Q 1.00",
+        "Filter 3: ON PK Fc 2500 Hz Gain 5.0 dB Q 1.41",
+        "Filter 4: ON PK Fc 5000 Hz Gain 4.5 dB Q 1.41",
+        "Filter 5: ON PK Fc 10000 Hz Gain 3.5 dB Q 1.00",
     ],
 }
 
 _PROFILE_DISPLAY_NAMES: Dict[str, str] = {
     "fps_step_booster": "FPS Step Booster",
-    "music_movie": "Music / Movie",
-    "flat": "Flat / Normal",
+    "bass_boost": "Bass Boost",
+    "music_movie": "Music / Vocal",
+    "flat": "Flat / Neutral",
     "gaming_surround": "Gaming Surround",
 }
 
@@ -137,12 +148,27 @@ class EqualizerAPO:
         """Return the human-readable name for a profile key."""
         return _PROFILE_DISPLAY_NAMES.get(profile_key, profile_key)
 
+    _KEY_MAP = {
+        "FPS Step Booster": "fps_step_booster",
+        "fps_step_booster": "fps_step_booster",
+        "Bass Boost": "bass_boost",
+        "bass_boost": "bass_boost",
+        "Music / Vocal": "music_movie",
+        "music_movie": "music_movie",
+        "Gaming Surround": "gaming_surround",
+        "gaming_surround": "gaming_surround",
+        "Flat / Neutral": "flat",
+        "flat": "flat",
+    }
+
     def apply_profile(self, profile_key: str) -> bool:
         """
         Apply the named EQ profile by writing Equalizer APO's config.txt.
+        Supports both display names and internal keys.
         Returns True on success.
         """
-        if profile_key not in _PROFILES:
+        norm_key = self._KEY_MAP.get(profile_key, profile_key.lower().replace(" ", "_"))
+        if norm_key not in _PROFILES:
             logger.warning("Unknown EQ profile: %s", profile_key)
             return False
 
@@ -151,11 +177,38 @@ class EqualizerAPO:
                            self._config_path.parent)
             return False
 
-        lines = self._build_config(profile_key)
+        lines = self._build_config(norm_key)
         ok = self._write_atomic(lines)
         if ok:
-            self._current_profile = profile_key
-            logger.info("EQ profile applied: %s", profile_key)
+            self._current_profile = norm_key
+            logger.info("EQ profile applied: %s (%s)", profile_key, norm_key)
+        return ok
+
+    def apply_custom_sliders(self, bass_pct: int, clarity_pct: int, surround_pct: int) -> bool:
+        """
+        Dynamically shape frequency response in real time based on UI sliders:
+        - bass_pct: 0 to 100 -> 0 to +12 dB at 80 Hz
+        - clarity_pct: 0 to 100 -> 0 to +12 dB at 2500 Hz
+        - surround_pct: 0 to 100 -> 0 to +8 dB at 8000 Hz
+        """
+        bass_gain = (max(0, min(100, bass_pct)) / 100.0) * 12.0
+        clarity_gain = (max(0, min(100, clarity_pct)) / 100.0) * 12.0
+        spatial_gain = (max(0, min(100, surround_pct)) / 100.0) * 8.0
+
+        lines = list(_CONFIG_HEADER)
+        lines.append(f"# Dynamic Frequency Shaping: Bass={bass_pct}%, Clarity={clarity_pct}%, 3D={surround_pct}%")
+        lines.append("Preamp: -4 dB")
+        if bass_gain > 0.1:
+            lines.append(f"Filter 1: ON PK Fc 80 Hz Gain {bass_gain:.1f} dB Q 1.1")
+        if clarity_gain > 0.1:
+            lines.append(f"Filter 2: ON PK Fc 2500 Hz Gain {clarity_gain:.1f} dB Q 1.4")
+        if spatial_gain > 0.1:
+            lines.append(f"Filter 3: ON PK Fc 8000 Hz Gain {spatial_gain:.1f} dB Q 1.2")
+
+        ok = self._write_atomic(lines)
+        if ok:
+            logger.info("Custom EQ sliders applied: Bass=%.1fdB, Clarity=%.1fdB, 3D=%.1fdB",
+                        bass_gain, clarity_gain, spatial_gain)
         return ok
 
     def read_current_config(self) -> Optional[str]:

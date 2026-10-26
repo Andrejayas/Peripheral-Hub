@@ -497,18 +497,24 @@ class Dashboard:
         tk.Label(card_btns, text="Button Mapping & Macro (Posisi Tombol)",
                  font=("Segoe UI", 10, "bold"), fg=ACCENT, bg=CARD).pack(anchor="w")
 
+        self._mouse_btn_status_lbl = tk.Label(card_btns,
+                                              text="● Windows & Hardware Hook Active",
+                                              font=("Segoe UI", 8), fg=GREEN, bg=CARD)
+        self._mouse_btn_status_lbl.pack(anchor="w", pady=(2, 4))
+
         btn_grid = tk.Frame(card_btns, bg=CARD)
-        btn_grid.pack(fill="x", pady=(6, 2))
+        btn_grid.pack(fill="x", pady=(2, 2))
 
         # Button 4 (Forward)
         b4_row = tk.Frame(btn_grid, bg=CARD)
         b4_row.pack(fill="x", pady=2)
         tk.Label(b4_row, text="Button 4 (Forward)", font=("Segoe UI", 8),
                  fg=TEXT_MUTED, bg=CARD, width=18, anchor="w").pack(side="left")
-        b4_opts = ["Browser Forward", "Double Click", "Quick Fire (Macro)", "Volume Up", "Mute"]
+        b4_opts = ["Browser Forward", "Double Click", "Quick Fire (Macro)", "Volume Up", "Mute", "Screenshot"]
         b4_menu = ttk.Combobox(b4_row, textvariable=self._mouse_btn4_var,
                                values=b4_opts, width=20, state="readonly")
         b4_menu.pack(side="left", padx=4)
+        b4_menu.bind("<<ComboboxSelected>>", lambda e: self._on_btn_mapping_change(4, self._mouse_btn4_var.get()))
 
         # Button 5 (Backward)
         b5_row = tk.Frame(btn_grid, bg=CARD)
@@ -519,6 +525,7 @@ class Dashboard:
         b5_menu = ttk.Combobox(b5_row, textvariable=self._mouse_btn5_var,
                                values=b5_opts, width=20, state="readonly")
         b5_menu.pack(side="left", padx=4)
+        b5_menu.bind("<<ComboboxSelected>>", lambda e: self._on_btn_mapping_change(5, self._mouse_btn5_var.get()))
 
         # 4. Mouse RGB Lighting Card
         card_rgb = tk.Frame(page, bg=CARD, padx=14, pady=10)
@@ -526,13 +533,18 @@ class Dashboard:
 
         rgb_head = tk.Frame(card_rgb, bg=CARD)
         rgb_head.pack(fill="x")
-        tk.Label(rgb_head, text="Mouse LED Effect", font=("Segoe UI", 10, "bold"),
+        tk.Label(rgb_head, text="Mouse DPI LED / Effect", font=("Segoe UI", 10, "bold"),
                  fg=ACCENT, bg=CARD).pack(side="left")
+
+        self._mouse_active_color_lbl = tk.Label(rgb_head, text="● #FF2A2A", font=("Segoe UI", 8, "bold"),
+                                                fg="#ff2a2a", bg=CARD)
+        self._mouse_active_color_lbl.pack(side="left", padx=8)
 
         m_rgb_modes = ["Neon Cycle", "Breathing", "Static", "LED Off"]
         m_rgb_menu = ttk.Combobox(rgb_head, textvariable=self._mouse_rgb_mode_var,
                                   values=m_rgb_modes, width=14, state="readonly")
         m_rgb_menu.pack(side="right")
+        m_rgb_menu.bind("<<ComboboxSelected>>", lambda e: self._on_mouse_rgb_mode_change(self._mouse_rgb_mode_var.get()))
 
         # Color dots
         dots_row = tk.Frame(card_rgb, bg=CARD)
@@ -551,7 +563,7 @@ class Dashboard:
         ]
         for hex_code, name in colors:
             dot = tk.Label(dots_row, text="●", font=("Segoe UI", 12, "bold"),
-                           fg=hex_code, bg=CARD, cursor="hand2", padx=3)
+                            fg=hex_code, bg=CARD, cursor="hand2", padx=3)
             dot.pack(side="left")
             dot.bind("<Button-1>", lambda e, c=hex_code: self._on_mouse_color(c))
 
@@ -564,7 +576,30 @@ class Dashboard:
         self._mouse_dpi_val_lbl.configure(text=f"{dpi} DPI")
 
     def _on_mouse_color(self, hex_code: str) -> None:
+        if self._mouse:
+            self._mouse.set_dpi_color(hex_code)
+        if hasattr(self, "_mouse_active_color_lbl"):
+            self._mouse_active_color_lbl.configure(text=f"● {hex_code.upper()}", fg=hex_code)
         logger.info("Mouse custom color selected: %s", hex_code)
+
+    def _on_btn_mapping_change(self, btn_idx: int, action: str) -> None:
+        if self._mouse:
+            self._mouse.set_button_mapping(btn_idx, action)
+        if hasattr(self, "_mouse_btn_status_lbl"):
+            self._mouse_btn_status_lbl.configure(
+                text=f"✓ Button {btn_idx} set to '{action}'",
+                fg=ACCENT
+            )
+            self._root.after(3000, lambda: self._mouse_btn_status_lbl.configure(
+                text="● Windows & Hardware Hook Active", fg=GREEN
+            ))
+        logger.info("Button %d remap action selected: %s", btn_idx, action)
+
+    def _on_mouse_rgb_mode_change(self, mode_name: str) -> None:
+        if self._mouse:
+            color = self._mouse.get_status().get("current_color", "#ff2a2a")
+            self._mouse.set_rgb_effect(mode_name, color)
+        logger.info("Mouse RGB mode changed: %s", mode_name)
 
     # ------------------------------------------------------------------
     # Page 2: ⌨️ AULA S75 Pro (Mechanical Keyboard)
@@ -837,6 +872,7 @@ class Dashboard:
                  fg=TEXT_MUTED, bg=CARD, width=16, anchor="w").pack(side="left")
         self._bass_slider = tk.Scale(s1, from_=0, to=100, orient="horizontal",
                                      variable=self._audio_bass_var,
+                                     command=self._on_audio_slider_change,
                                      bg=CARD, fg=TEXT, troughcolor=BORDER,
                                      highlightthickness=0, length=180, showvalue=False)
         self._bass_slider.pack(side="left")
@@ -851,6 +887,7 @@ class Dashboard:
                  fg=TEXT_MUTED, bg=CARD, width=16, anchor="w").pack(side="left")
         self._clarity_slider = tk.Scale(s2, from_=0, to=100, orient="horizontal",
                                         variable=self._audio_clarity_var,
+                                        command=self._on_audio_slider_change,
                                         bg=CARD, fg=TEXT, troughcolor=BORDER,
                                         highlightthickness=0, length=180, showvalue=False)
         self._clarity_slider.pack(side="left")
@@ -865,12 +902,18 @@ class Dashboard:
                  fg=TEXT_MUTED, bg=CARD, width=16, anchor="w").pack(side="left")
         self._surround_slider = tk.Scale(s3, from_=0, to=100, orient="horizontal",
                                          variable=self._audio_surround_var,
+                                         command=self._on_audio_slider_change,
                                          bg=CARD, fg=TEXT, troughcolor=BORDER,
                                          highlightthickness=0, length=180, showvalue=False)
         self._surround_slider.pack(side="left")
         self._surround_lbl = tk.Label(s3, text="70%", font=("Segoe UI", 8, "bold"),
                                       fg=TEXT, bg=CARD)
         self._surround_lbl.pack(side="left", padx=8)
+
+        self._audio_status_lbl = tk.Label(card_sliders,
+                                          text="● Equalizer APO Active (Speakers - dbE Kumo)",
+                                          font=("Segoe UI", 8), fg=GREEN, bg=CARD)
+        self._audio_status_lbl.pack(anchor="w", pady=(6, 0))
 
     def _set_audio_preset(self, preset_key: str) -> None:
         self._audio_preset_var.set(preset_key)
@@ -904,7 +947,22 @@ class Dashboard:
         self._bass_lbl.configure(text=f"{self._audio_bass_var.get()}%")
         self._clarity_lbl.configure(text=f"{self._audio_clarity_var.get()}%")
         self._surround_lbl.configure(text=f"{self._audio_surround_var.get()}%")
+
+        if self._eq_apo:
+            self._eq_apo.apply_profile(preset_key)
+        if self._fxsound:
+            self._fxsound.set_preset(preset_key)
         logger.info("Audio preset changed to: %s", preset_key)
+
+    def _on_audio_slider_change(self, val=None) -> None:
+        b = self._audio_bass_var.get()
+        c = self._audio_clarity_var.get()
+        s = self._audio_surround_var.get()
+        self._bass_lbl.configure(text=f"{b}%")
+        self._clarity_lbl.configure(text=f"{c}%")
+        self._surround_lbl.configure(text=f"{s}%")
+        if self._eq_apo:
+            self._eq_apo.apply_custom_sliders(b, c, s)
 
     # ------------------------------------------------------------------
     # Bottom Status Bar (CustomRP inspired)
@@ -997,8 +1055,8 @@ class Dashboard:
         if self._mouse is None:
             return
         st = self._mouse.get_status()
-        online = st.get("online", False)
         conn_type = st.get("connection_type", "Disconnected")
+        online = bool(st.get("online", False) or (conn_type not in ("Disconnected", None)))
 
         if online:
             self._mouse_status_lbl.configure(text=f"● Connected ({conn_type})", fg=GREEN)
@@ -1019,6 +1077,16 @@ class Dashboard:
         self._mouse_dpi_val_lbl.configure(text=f"{dpi} DPI")
         for d, btn in self._dpi_buttons.items():
             btn.set_active(d == dpi)
+
+        color = st.get("current_color")
+        if color and hasattr(self, "_mouse_active_color_lbl"):
+            self._mouse_active_color_lbl.configure(text=f"● {color.upper()}", fg=color)
+
+        maps = st.get("button_mappings", {})
+        if maps.get(4) and self._mouse_btn4_var.get() != maps[4]:
+            self._mouse_btn4_var.set(maps[4])
+        if maps.get(5) and self._mouse_btn5_var.get() != maps[5]:
+            self._mouse_btn5_var.set(maps[5])
 
     def _refresh_keyboard(self) -> None:
         if self._keyboard is None:

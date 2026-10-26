@@ -378,6 +378,13 @@ class PeripheralHub:
 
             self._update_tray_battery()
 
+            # If dashboard is visible, refresh telemetry on UI thread
+            if is_open and self._tk_root and self._dashboard:
+                try:
+                    self._tk_root.after(0, self._dashboard.refresh)
+                except Exception:
+                    pass
+
             # Persist headset estimator state
             if self._headset:
                 try:

@@ -18,6 +18,8 @@ import winreg
 from pathlib import Path
 from typing import Optional, Callable, List, Tuple
 
+from devices.mouse_hook import MouseHookManager
+
 logger = logging.getLogger(__name__)
 
 VID = 0x3554
@@ -146,10 +148,18 @@ class NoirM1Nex:
         self.is_charging: bool = False
         self.battery_voltage: Optional[int] = None
         self.current_dpi: int = 1200
+        self.current_color: str = "#ff2a2a"
         self.online: bool = False
         self.active_pid: Optional[int] = None
         self.connection_type: str = "Disconnected"
         self._active_endpoint: Optional[bytes] = None
+
+        self.button_mappings: Dict[int, str] = {
+            4: "Browser Forward",
+            5: "Browser Backward",
+        }
+        self._hook_mgr = MouseHookManager.get_instance(self)
+        self._hook_mgr.start()
 
         self._on_connect = on_connect
         self._on_disconnect = on_disconnect
@@ -324,16 +334,30 @@ class NoirM1Nex:
         return True
 
     def set_button_mapping(self, btn_index: int, function_name: str) -> bool:
-        """Map mouse button to standard/macro function."""
+        """Map mouse button to standard/macro function via Low-Level Windows Hook."""
+        with self._lock:
+            self.button_mappings[btn_index] = function_name
+        self._hook_mgr.set_mapping(btn_index, function_name)
         logger.info("Setting Noir M1 Nex button %d mapping to: %s", btn_index, function_name)
         return True
 
+    def set_dpi_color(self, color_hex: str) -> bool:
+        """Set the active DPI LED color for the current stage."""
+        with self._lock:
+            self.current_color = color_hex
+        logger.info("Noir M1 Nex DPI color set to %s", color_hex)
+        return True
+
     def set_rgb_effect(self, mode_name: str, color_hex: str = "#ff2a2a") -> bool:
-        """Set mouse RGB LED effect (Neon Cycle, Breathing, Static, LED Off)."""
+        """Set mouse RGB / DPI LED effect (Neon Cycle, Breathing, Static, LED Off)."""
+        with self._lock:
+            self.current_color = color_hex
         logger.info("Setting Noir M1 Nex RGB to mode=%s, color=%s", mode_name, color_hex)
         return True
 
     def stop(self) -> None:
+        if self._hook_mgr:
+            self._hook_mgr.stop()
         if self._dll and self._started:
             try:
                 self._dll.CS_UsbServer_Exit()
@@ -344,13 +368,16 @@ class NoirM1Nex:
 
     def get_status(self) -> dict:
         with self._lock:
+            is_active = bool(self.online or (self.connection_type != "Disconnected"))
             return {
-                "online": self.online,
-                "connection_type": self.connection_type,
+                "online": is_active,
+                "connection_type": self.connection_type if is_active else "Disconnected",
                 "battery_level": self.battery_level,
                 "is_charging": self.is_charging,
                 "battery_voltage": self.battery_voltage,
                 "current_dpi": self.current_dpi,
+                "current_color": self.current_color,
+                "button_mappings": dict(self.button_mappings),
             }
 
     @property
