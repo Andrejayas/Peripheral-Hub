@@ -498,7 +498,7 @@ class Dashboard:
                  font=("Segoe UI", 10, "bold"), fg=ACCENT, bg=CARD).pack(anchor="w")
 
         self._mouse_btn_status_lbl = tk.Label(card_btns,
-                                              text="● Windows & Hardware Hook Active",
+                                              text="● Button Remap & Macro Engine Active",
                                               font=("Segoe UI", 8), fg=GREEN, bg=CARD)
         self._mouse_btn_status_lbl.pack(anchor="w", pady=(2, 4))
 
@@ -591,7 +591,7 @@ class Dashboard:
                 fg=ACCENT
             )
             self._root.after(3000, lambda: self._mouse_btn_status_lbl.configure(
-                text="● Windows & Hardware Hook Active", fg=GREEN
+                text="● Button Remap & Macro Engine Active", fg=GREEN
             ))
         logger.info("Button %d remap action selected: %s", btn_idx, action)
 
@@ -996,7 +996,7 @@ class Dashboard:
         self._visible = True
         self._root.deiconify()
         self._root.lift()
-        self._root.focus_force()
+        self._root.focus_set()
         self.refresh()
         self._schedule_refresh()
 
