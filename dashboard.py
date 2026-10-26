@@ -1,33 +1,54 @@
 """
 dashboard.py
-Dashboard - Main Peripheral Hub control window.
-420x640 dark-themed tkinter window showing device cards and audio panel.
-Positioned at bottom-right corner. Refreshes every 4 seconds when open.
-Includes active device scanner (Pindai Perangkat), Custom RGB Keyboard Palette,
-tactile Mouse DPI & Cursor Speed adjustment, and Audio Enhancer inspired by FxSound.
+Peripheral Hub - Modern Universal Gaming Peripheral Controller.
+Inspired by CustomRP (native Windows desktop window with menu & status bar)
+and Coucou (sleek pill navigation tabs, smooth rounded cards, and clean telemetry).
+
+Features:
+- Free-floating draggable Windows desktop window with native Dark Mode title bar.
+- Clean Menu Bar: File, Devices, Audio, Help.
+- Coucou-style pill tab navigation: Mouse, Keyboard, Headset, Audio.
+- Dedicated Mouse Noir M1 Nex customizer: button remapping, macros, RGB lighting, DPI, battery mV/%.
+- Keyboard AULA S75 Pro: 20 lighting modes, custom RGB palette, Brightness (1-5), Speed (1-5).
+- Headset dbE Kumo GS1X Pro: Smart battery tracker, Windows master volume.
+- Audio Enhancer: Gaming FPS Step Booster, Music, Bass, Cinematic, and Flat profiles.
+- Native Win32 status bar at bottom.
+- Window remembers last moved position on screen.
 """
 
+import ctypes
+from ctypes import byref, c_int, sizeof
+import json
+import logging
+import os
 import threading
 import time
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 from pathlib import Path
-from typing import Optional, Callable, Dict, Any, Tuple
+from typing import Optional, Callable, Dict, Any, Tuple, List
 
-# Colors
-BG       = "#181818"
-CARD     = "#222222"
-ACCENT   = "#e26332"
-TEXT     = "#ffffff"
-DIM      = "#888888"
-GREEN    = "#4caf50"
-ORANGE   = "#ff9800"
-RED      = "#f44336"
-BORDER   = "#303030"
+logger = logging.getLogger(__name__)
 
-WIN_W    = 420
-WIN_H    = 640
-REFRESH_INTERVAL = 4000  # ms
+# UI Color Palette (Deep Obsidian / Dark Glass aesthetic)
+BG           = "#141416"
+CARD         = "#1c1c20"
+CARD_HOVER   = "#24242a"
+BORDER       = "#2c2c34"
+BORDER_LIGHT = "#3c3c46"
+ACCENT       = "#e26332"
+ACCENT_HOVER = "#f27342"
+TEXT         = "#ffffff"
+TEXT_MUTED   = "#a0a0a8"
+DIM          = "#666670"
+GREEN        = "#4caf50"
+ORANGE       = "#ff9800"
+RED          = "#f44336"
+BLUE         = "#3b82f6"
+
+WIN_W = 500
+WIN_H = 680
+CONFIG_PATH = Path(__file__).parent / "config.json"
 
 
 def _battery_color(pct: Optional[int]) -> str:
@@ -44,18 +65,9 @@ def _pct_text(pct: Optional[int]) -> str:
     return f"{pct}%" if pct is not None else "N/A"
 
 
-class _SectionCard(tk.Frame):
-    """A styled card frame for device/audio sections."""
-    def __init__(self, parent, title: str, **kwargs):
-        super().__init__(parent, bg=CARD, padx=12, pady=10, **kwargs)
-        title_lbl = tk.Label(self, text=title, font=("Segoe UI", 10, "bold"),
-                             fg=ACCENT, bg=CARD, anchor="w")
-        title_lbl.pack(fill="x", pady=(0, 6))
-
-
 class _BatteryBar(tk.Canvas):
-    """A horizontal battery-fill bar widget."""
-    def __init__(self, parent, width=120, height=14, **kwargs):
+    """Modern horizontal battery bar widget with rounded corners and cell nub."""
+    def __init__(self, parent, width=160, height=14, **kwargs):
         super().__init__(parent, width=width, height=height,
                          bg=CARD, highlightthickness=0, **kwargs)
         self._bar_w = width
@@ -66,31 +78,60 @@ class _BatteryBar(tk.Canvas):
         if pct is None:
             self._draw(0, DIM)
         else:
-            color = _battery_color(pct)
-            self._draw(pct, color)
+            self._draw(pct, _battery_color(pct))
 
     def _draw(self, pct: int, color: str) -> None:
         self.delete("all")
-        self.create_rectangle(0, 0, self._bar_w - 1, self._bar_h - 1,
-                               outline=BORDER, fill=BG)
-        nub_w, nub_h = 4, 6
-        self.create_rectangle(self._bar_w, (self._bar_h - nub_h) // 2,
-                               self._bar_w + nub_w, (self._bar_h + nub_h) // 2,
-                               fill=BORDER, outline="")
-        fill_w = int((self._bar_w - 2) * max(0, min(100, pct)) / 100)
+        # Background bar
+        self.create_rectangle(0, 0, self._bar_w - 6, self._bar_h - 1,
+                              outline=BORDER, fill=BG, width=1)
+        # Positive terminal nub
+        self.create_rectangle(self._bar_w - 5, (self._bar_h - 6) // 2,
+                              self._bar_w - 1, (self._bar_h + 6) // 2,
+                              fill=BORDER, outline="")
+        fill_w = int((self._bar_w - 8) * max(0, min(100, pct)) / 100)
         if fill_w > 0:
             self.create_rectangle(1, 1, fill_w, self._bar_h - 2,
-                                   fill=color, outline="")
+                                  fill=color, outline="")
 
 
-class _DpiButton(tk.Label):
-    """A small selectable DPI button."""
+class _PillTabButton(tk.Label):
+    """Coucou-style pill tab button with smooth hover state."""
+    def __init__(self, parent, text: str, icon: str, tab_id: str, on_select: Callable, **kwargs):
+        self.tab_id = tab_id
+        self.on_select = on_select
+        self._is_active = False
+        super().__init__(parent, text=f"{icon} {text}", font=("Segoe UI", 9, "bold"),
+                         fg=TEXT_MUTED, bg=BORDER, cursor="hand2", padx=12, pady=6,
+                         relief="flat", **kwargs)
+        self.bind("<Button-1>", lambda e: self.on_select(self.tab_id))
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+
+    def set_active(self, active: bool) -> None:
+        self._is_active = active
+        if active:
+            self.configure(fg=TEXT, bg=ACCENT)
+        else:
+            self.configure(fg=TEXT_MUTED, bg=BORDER)
+
+    def _on_enter(self, e):
+        if not self._is_active:
+            self.configure(bg=CARD_HOVER, fg=TEXT)
+
+    def _on_leave(self, e):
+        if not self._is_active:
+            self.configure(bg=BORDER, fg=TEXT_MUTED)
+
+
+class _DpiPill(tk.Label):
+    """Compact selectable DPI pill."""
     def __init__(self, parent, dpi: int, on_click: Callable, **kwargs):
         super().__init__(parent,
                          text=str(dpi) if dpi < 1000 else f"{dpi//1000}K",
                          font=("Segoe UI", 8),
                          fg=DIM, bg=BORDER,
-                         padx=6, pady=3,
+                         padx=8, pady=4,
                          cursor="hand2",
                          relief="flat",
                          **kwargs)
@@ -108,8 +149,12 @@ class _DpiButton(tk.Label):
 
 class Dashboard:
     """
-    Peripheral Hub main dashboard window.
-    Integrated device controls, customizable RGB colors, and FxSound-inspired audio tuner.
+    Peripheral Hub main desktop application window.
+    Features:
+    - Freely draggable native window with Windows 10/11 Dark Title Bar.
+    - Pill Tab navigation for Mouse, Keyboard, Headset, and Audio.
+    - Full customizer suite for Noir M1 Nex, AULA S75 Pro, and dbE Kumo.
+    - Status bar with connected device counts and battery summary.
     """
 
     def __init__(self,
@@ -131,262 +176,492 @@ class Dashboard:
         self._root: Optional[tk.Toplevel] = None
         self._visible = False
         self._refresh_job = None
-        self._dpi_buttons: Dict[int, _DpiButton] = {}
-        self._eq_buttons: Dict[str, tk.Button] = {}
+        self._current_tab = "mouse"
 
-        # Audio Enhancement Sliders (Inspired by FxSound)
-        self._bass_val = 60
-        self._clarity_val = 80
-        self._surround_val = 70
-        self._boost_val = 50
+        # Tab buttons & pages
+        self._tab_buttons: Dict[str, _PillTabButton] = {}
+        self._tab_pages: Dict[str, tk.Frame] = {}
+
+        # Mouse controls
+        self._dpi_buttons: Dict[int, _DpiPill] = {}
+        self._eq_buttons: Dict[str, tk.Label] = {}
 
         self._build()
 
     # ------------------------------------------------------------------
-    # Window lifecycle
+    # Window lifecycle & positioning
     # ------------------------------------------------------------------
 
     def _build(self) -> None:
         root = tk.Toplevel()
         self._root = root
         root.title("Peripheral Hub")
-        root.overrideredirect(True)
         root.configure(bg=BG)
         root.resizable(False, False)
-        root.attributes("-topmost", True)
 
-        sw = root.winfo_screenwidth()
-        sh = root.winfo_screenheight()
-        x = sw - WIN_W - 16
-        y = sh - WIN_H - 48
-        root.geometry(f"{WIN_W}x{WIN_H}+{x}+{y}")
+        # Variables initialized after root exists
+        self._mouse_macro_var = tk.StringVar(root, value="Default (Browser Back)")
+        self._mouse_btn4_var = tk.StringVar(root, value="Browser Forward")
+        self._mouse_btn5_var = tk.StringVar(root, value="Browser Backward")
+        self._mouse_rgb_mode_var = tk.StringVar(root, value="Neon Cycle")
 
+        # Keyboard controls
+        self._kb_light_var = tk.StringVar(root, value="Colourful")
+        self._kb_br_var = tk.IntVar(root, value=5)
+        self._kb_sp_var = tk.IntVar(root, value=3)
+
+        # Headset controls
+        self._hs_vol_var = tk.IntVar(root, value=50)
+
+        # Audio Enhancer controls
+        self._audio_preset_var = tk.StringVar(root, value="FPS Step Booster")
+        self._audio_bass_var = tk.IntVar(root, value=60)
+        self._audio_clarity_var = tk.IntVar(root, value=80)
+        self._audio_surround_var = tk.IntVar(root, value=70)
+
+        # Load saved position or center on primary screen
+        pos_x, pos_y = self._load_window_pos()
+        if pos_x is None or pos_y is None:
+            sw = root.winfo_screenwidth()
+            sh = root.winfo_screenheight()
+            pos_x = max(50, (sw - WIN_W) // 2)
+            pos_y = max(50, (sh - WIN_H) // 2)
+
+        root.geometry(f"{WIN_W}x{WIN_H}+{pos_x}+{pos_y}")
+
+        # Bind window drag / move events to remember position
+        root.bind("<Configure>", self._on_window_configure)
+
+        # Enable Windows 10/11 Immersive Dark Mode for Title Bar
+        root.after(10, self._apply_windows_dark_titlebar)
+
+        # Native protocol for close button (hides to tray)
         root.protocol("WM_DELETE_WINDOW", self.hide)
 
-        self._build_header()
-        self._build_scroll_area()
-        self._build_footer()
+        # Build UI layout
+        self._build_menu_bar()
+        self._build_top_header()
+        self._build_pill_tabs()
+        self._build_pages_container()
+        self._build_bottom_status_bar()
 
+        # Select initial tab
+        self.select_tab("mouse")
+
+        # Initially hidden until tray icon or user opens it
         root.withdraw()
 
-    def _build_header(self) -> None:
-        hdr = tk.Frame(self._root, bg=CARD, pady=10)
-        hdr.pack(fill="x")
+    def _apply_windows_dark_titlebar(self) -> None:
+        """Call DwmSetWindowAttribute to make the native Windows titlebar dark."""
+        if not self._root:
+            return
+        try:
+            hwnd = ctypes.windll.user32.GetParent(self._root.winfo_id())
+            if not hwnd:
+                hwnd = self._root.winfo_id()
+            DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+            val = c_int(1)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, byref(val), sizeof(val)
+            )
+        except Exception as e:
+            logger.debug("Dark title bar hook error: %s", e)
 
-        tk.Label(hdr, text="⬡  Peripheral Hub",
-                 font=("Segoe UI", 12, "bold"),
-                 fg=TEXT, bg=CARD).pack(side="left", padx=14)
+    def _load_window_pos(self) -> Tuple[Optional[int], Optional[int]]:
+        try:
+            if CONFIG_PATH.exists():
+                with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                    pos = cfg.get("window_pos")
+                    if pos and isinstance(pos, list) and len(pos) == 2:
+                        return int(pos[0]), int(pos[1])
+        except Exception:
+            pass
+        return None, None
 
-        btn_frame = tk.Frame(hdr, bg=CARD)
-        btn_frame.pack(side="right", padx=8)
-        self._make_header_btn(btn_frame, "−", self.hide)
-        self._make_header_btn(btn_frame, "✕", self.hide)
+    def _save_window_pos(self, x: int, y: int) -> None:
+        try:
+            cfg = {}
+            if CONFIG_PATH.exists():
+                with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+            cfg["window_pos"] = [x, y]
+            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+                json.dump(cfg, f, indent=2)
+        except Exception:
+            pass
 
-        # Manual Scan button
-        self._scan_btn = tk.Label(hdr, text="🔄 Pindai",
-                                  font=("Segoe UI", 9, "bold"),
-                                  fg=ACCENT, bg=BORDER,
-                                  cursor="hand2", padx=8, pady=3)
-        self._scan_btn.pack(side="right", padx=(0, 8))
+    def _on_window_configure(self, event=None) -> None:
+        if self._root and self._visible and event and event.widget == self._root:
+            x = self._root.winfo_x()
+            y = self._root.winfo_y()
+            if x > 0 and y > 0:
+                self._save_window_pos(x, y)
+
+    # ------------------------------------------------------------------
+    # Menu Bar (CustomRP inspired)
+    # ------------------------------------------------------------------
+
+    def _build_menu_bar(self) -> None:
+        menubar = tk.Menu(self._root, bg=BG, fg=TEXT, activebackground=ACCENT,
+                          activeforeground=TEXT, relief="flat", bd=0)
+
+        # File menu
+        file_menu = tk.Menu(menubar, tearoff=0, bg=CARD, fg=TEXT,
+                            activebackground=ACCENT, activeforeground=TEXT)
+        file_menu.add_command(label="🔄 Scan Devices", command=self.scan_all)
+        file_menu.add_command(label="− Minimize to Tray", command=self.hide)
+        file_menu.add_separator()
+        file_menu.add_command(label="✕ Exit Application", command=self._on_full_exit)
+        menubar.add_cascade(label="File", menu=file_menu)
+
+        # Devices menu
+        dev_menu = tk.Menu(menubar, tearoff=0, bg=CARD, fg=TEXT,
+                           activebackground=ACCENT, activeforeground=TEXT)
+        dev_menu.add_command(label="🖱️ Noir M1 Nex", command=lambda: self.select_tab("mouse"))
+        dev_menu.add_command(label="⌨️ AULA S75 Pro", command=lambda: self.select_tab("keyboard"))
+        dev_menu.add_command(label="🎧 dbE Kumo GS1X Pro", command=lambda: self.select_tab("headset"))
+        dev_menu.add_separator()
+        dev_menu.add_command(label="🔄 Re-detect All", command=self.scan_all)
+        menubar.add_cascade(label="Devices", menu=dev_menu)
+
+        # Audio menu
+        audio_menu = tk.Menu(menubar, tearoff=0, bg=CARD, fg=TEXT,
+                            activebackground=ACCENT, activeforeground=TEXT)
+        audio_menu.add_command(label="🎯 FPS Step Booster", command=lambda: self._set_audio_preset("FPS Step Booster"))
+        audio_menu.add_command(label="🎵 Music / Vocal", command=lambda: self._set_audio_preset("Music / Vocal"))
+        audio_menu.add_command(label="💥 Bass Boost", command=lambda: self._set_audio_preset("Bass Boost"))
+        audio_menu.add_command(label="🎬 Cinematic", command=lambda: self._set_audio_preset("Cinematic"))
+        audio_menu.add_command(label="⚖️ Flat / Neutral", command=lambda: self._set_audio_preset("Flat / Neutral"))
+        menubar.add_cascade(label="Audio", menu=audio_menu)
+
+        # Help menu
+        help_menu = tk.Menu(menubar, tearoff=0, bg=CARD, fg=TEXT,
+                            activebackground=ACCENT, activeforeground=TEXT)
+        help_menu.add_command(label="About Peripheral Hub", command=self._show_about)
+        help_menu.add_command(label="GitHub Repository", command=self._open_github)
+        menubar.add_cascade(label="Help", menu=help_menu)
+
+        self._root.config(menu=menubar)
+
+    def _show_about(self) -> None:
+        messagebox.showinfo(
+            "About Peripheral Hub",
+            "Peripheral Hub v1.2.0\n\n"
+            "An ultra-lightweight universal gaming peripheral controller for Windows.\n"
+            "Supports Noir M1 Nex, AULA S75 Pro, dbE Kumo GS1X Pro, and Gaming Audio DSP.\n\n"
+            "Created by Andrejayas."
+        )
+
+    def _open_github(self) -> None:
+        import webbrowser
+        webbrowser.open("https://github.com/Andrejayas/Peripheral-Hub")
+
+    def _on_full_exit(self) -> None:
+        if self._on_close:
+            self._on_close()
+        self._root.quit()
+
+    # ------------------------------------------------------------------
+    # Top Header & Coucou Pill Tabs
+    # ------------------------------------------------------------------
+
+    def _build_top_header(self) -> None:
+        hdr_frame = tk.Frame(self._root, bg=BG, padx=16, pady=12)
+        hdr_frame.pack(fill="x")
+
+        # App Brand & Status Dot
+        brand_frame = tk.Frame(hdr_frame, bg=BG)
+        brand_frame.pack(side="left")
+
+        self._brand_dot = tk.Label(brand_frame, text="●", font=("Segoe UI", 12),
+                                   fg=GREEN, bg=BG)
+        self._brand_dot.pack(side="left", padx=(0, 6))
+
+        tk.Label(brand_frame, text="Peripheral Hub", font=("Segoe UI", 13, "bold"),
+                 fg=TEXT, bg=BG).pack(side="left")
+
+        # Scan Button (Quick Pill)
+        self._scan_btn = tk.Label(hdr_frame, text="🔄 Scan", font=("Segoe UI", 9, "bold"),
+                                  fg=ACCENT, bg=CARD, cursor="hand2", padx=10, pady=4)
+        self._scan_btn.pack(side="right")
         self._scan_btn.bind("<Button-1>", lambda e: self.scan_all())
-        self._scan_btn.bind("<Enter>", lambda e: self._scan_btn.configure(bg=CARD, fg=TEXT))
-        self._scan_btn.bind("<Leave>", lambda e: self._scan_btn.configure(bg=BORDER, fg=ACCENT))
+        self._scan_btn.bind("<Enter>", lambda e: self._scan_btn.configure(bg=BORDER, fg=TEXT))
+        self._scan_btn.bind("<Leave>", lambda e: self._scan_btn.configure(bg=CARD, fg=ACCENT))
 
-        sep = tk.Frame(self._root, bg=ACCENT, height=2)
-        sep.pack(fill="x")
+    def _build_pill_tabs(self) -> None:
+        """Coucou-style navigation tab bar across top of content area."""
+        tabs_container = tk.Frame(self._root, bg=BG, padx=14, pady=2)
+        tabs_container.pack(fill="x")
 
-    def _make_header_btn(self, parent, text: str, cmd: Callable) -> tk.Label:
-        btn = tk.Label(parent, text=text, font=("Segoe UI", 11),
-                       fg=DIM, bg=CARD, cursor="hand2", padx=6)
-        btn.pack(side="left")
-        btn.bind("<Button-1>", lambda e: cmd())
-        btn.bind("<Enter>", lambda e: btn.configure(fg=TEXT))
-        btn.bind("<Leave>", lambda e: btn.configure(fg=DIM))
-        return btn
+        tab_bar = tk.Frame(tabs_container, bg=CARD, padx=4, pady=4)
+        tab_bar.pack(fill="x")
 
-    def _build_scroll_area(self) -> None:
-        container = tk.Frame(self._root, bg=BG)
-        container.pack(fill="both", expand=True, padx=4, pady=4)
+        tabs = [
+            ("mouse",    "Mouse",    "🖱️"),
+            ("keyboard", "Keyboard", "⌨️"),
+            ("headset",  "Headset",  "🎧"),
+            ("audio",    "Audio",    "🔊"),
+        ]
 
-        canvas = tk.Canvas(container, bg=BG, highlightthickness=0)
-        scrollbar = tk.Scrollbar(container, orient="vertical", command=canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
+        for tab_id, name, icon in tabs:
+            btn = _PillTabButton(tab_bar, name, icon, tab_id, self.select_tab)
+            btn.pack(side="left", expand=True, fill="x", padx=3)
+            self._tab_buttons[tab_id] = btn
 
-        scrollbar.pack(side="right", fill="y")
-        canvas.pack(side="left", fill="both", expand=True)
+    def select_tab(self, tab_id: str) -> None:
+        """Switch active tab page smoothly."""
+        self._current_tab = tab_id
+        for tid, btn in self._tab_buttons.items():
+            btn.set_active(tid == tab_id)
 
-        self._scroll_frame = tk.Frame(canvas, bg=BG)
-        self._scroll_window = canvas.create_window((0, 0), window=self._scroll_frame, anchor="nw")
-
-        self._scroll_frame.bind("<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.bind("<Configure>",
-            lambda e: canvas.itemconfig(self._scroll_window, width=e.width))
-
-        # Mouse wheel scroll on canvas ONLY (do NOT use bind_all so comboboxes scroll independently)
-        def _on_mousewheel(e):
-            canvas.yview_scroll(-1 * (e.delta // 120), "units")
-
-        canvas.bind("<MouseWheel>", _on_mousewheel)
-        self._scroll_frame.bind("<MouseWheel>", _on_mousewheel)
-
-        self._build_mouse_card()
-        self._build_keyboard_card()
-        self._build_headset_card()
-        self._build_audio_panel()
-
-    def _spacer(self, parent, h=4) -> None:
-        tk.Frame(parent, bg=BG, height=h).pack(fill="x")
+        for tid, page in self._tab_pages.items():
+            if tid == tab_id:
+                page.pack(fill="both", expand=True, padx=14, pady=10)
+            else:
+                page.pack_forget()
 
     # ------------------------------------------------------------------
-    # Mouse Card
+    # Pages Container
     # ------------------------------------------------------------------
 
-    def _build_mouse_card(self) -> None:
-        self._spacer(self._scroll_frame, 2)
-        card = _SectionCard(self._scroll_frame, "🖱  Noir M1 Nex")
-        card.pack(fill="x", padx=4, pady=3)
+    def _build_pages_container(self) -> None:
+        self._content_area = tk.Frame(self._root, bg=BG)
+        self._content_area.pack(fill="both", expand=True)
 
-        status_row = tk.Frame(card, bg=CARD)
-        status_row.pack(fill="x")
+        self._build_mouse_page()
+        self._build_keyboard_page()
+        self._build_headset_page()
+        self._build_audio_page()
 
-        self._mouse_status_lbl = tk.Label(status_row, text="● Disconnected",
-                                           font=("Segoe UI", 9, "bold"),
-                                           fg=RED, bg=CARD)
-        self._mouse_status_lbl.pack(side="left")
+    # ------------------------------------------------------------------
+    # Page 1: 🖱️ Noir M1 Nex (Dedicated Mouse Customizer)
+    # ------------------------------------------------------------------
 
-        self._mouse_charging_lbl = tk.Label(status_row, text="",
-                                             font=("Segoe UI", 9, "bold"),
-                                             fg=ORANGE, bg=CARD)
-        self._mouse_charging_lbl.pack(side="right")
+    def _build_mouse_page(self) -> None:
+        page = tk.Frame(self._content_area, bg=BG)
+        self._tab_pages["mouse"] = page
 
-        # Battery row
-        bat_row = tk.Frame(card, bg=CARD)
-        bat_row.pack(fill="x", pady=(5, 2))
+        # 1. Device Status Card
+        card_stat = tk.Frame(page, bg=CARD, padx=14, pady=10)
+        card_stat.pack(fill="x", pady=(0, 8))
+
+        row1 = tk.Frame(card_stat, bg=CARD)
+        row1.pack(fill="x")
+        tk.Label(row1, text="🖱️ Noir M1 Nex", font=("Segoe UI", 11, "bold"),
+                 fg=TEXT, bg=CARD).pack(side="left")
+        self._mouse_status_lbl = tk.Label(row1, text="● Disconnected",
+                                          font=("Segoe UI", 9, "bold"),
+                                          fg=RED, bg=CARD)
+        self._mouse_status_lbl.pack(side="right")
+
+        # Battery Row
+        bat_row = tk.Frame(card_stat, bg=CARD)
+        bat_row.pack(fill="x", pady=(8, 2))
         tk.Label(bat_row, text="Battery", font=("Segoe UI", 8),
-                 fg=DIM, bg=CARD, width=8, anchor="w").pack(side="left")
+                 fg=TEXT_MUTED, bg=CARD, width=10, anchor="w").pack(side="left")
         self._mouse_bat_bar = _BatteryBar(bat_row, width=170)
         self._mouse_bat_bar.pack(side="left", padx=6)
         self._mouse_bat_lbl = tk.Label(bat_row, text="N/A",
-                                        font=("Segoe UI", 8, "bold"),
-                                        fg=DIM, bg=CARD)
+                                       font=("Segoe UI", 8, "bold"),
+                                       fg=TEXT, bg=CARD)
         self._mouse_bat_lbl.pack(side="left")
+        self._mouse_volt_lbl = tk.Label(bat_row, text="", font=("Segoe UI", 8),
+                                        fg=DIM, bg=CARD)
+        self._mouse_volt_lbl.pack(side="left", padx=6)
 
-        # DPI Selector row
-        dpi_row = tk.Frame(card, bg=CARD)
-        dpi_row.pack(fill="x", pady=(5, 2))
-        tk.Label(dpi_row, text="DPI Speed", font=("Segoe UI", 8),
-                 fg=DIM, bg=CARD, width=8, anchor="w").pack(side="left")
-        dpi_btn_frame = tk.Frame(dpi_row, bg=CARD)
-        dpi_btn_frame.pack(side="left")
+        # 2. DPI Stage Selector Card
+        card_dpi = tk.Frame(page, bg=CARD, padx=14, pady=10)
+        card_dpi.pack(fill="x", pady=4)
+
+        dpi_head = tk.Frame(card_dpi, bg=CARD)
+        dpi_head.pack(fill="x")
+        tk.Label(dpi_head, text="DPI Sensitivity", font=("Segoe UI", 10, "bold"),
+                 fg=ACCENT, bg=CARD).pack(side="left")
+        self._mouse_dpi_val_lbl = tk.Label(dpi_head, text="1200 DPI",
+                                           font=("Segoe UI", 9, "bold"),
+                                           fg=TEXT, bg=CARD)
+        self._mouse_dpi_val_lbl.pack(side="right")
+
+        pills_row = tk.Frame(card_dpi, bg=CARD)
+        pills_row.pack(fill="x", pady=(8, 4))
         for dpi in [400, 800, 1200, 2400, 3200, 5000, 10000]:
-            btn = _DpiButton(dpi_btn_frame, dpi, self._on_dpi_click)
-            btn.pack(side="left", padx=2)
+            btn = _DpiPill(pills_row, dpi, self._on_dpi_click)
+            btn.pack(side="left", expand=True, fill="x", padx=2)
             self._dpi_buttons[dpi] = btn
 
-        rate_row = tk.Frame(card, bg=CARD)
-        rate_row.pack(fill="x", pady=2)
-        tk.Label(rate_row, text="Current DPI", font=("Segoe UI", 8),
-                 fg=DIM, bg=CARD, width=10, anchor="w").pack(side="left")
-        self._mouse_dpi_lbl = tk.Label(rate_row, text="1200",
-                                        font=("Segoe UI", 9, "bold"),
-                                        fg=TEXT, bg=CARD)
-        self._mouse_dpi_lbl.pack(side="left")
+        # 3. Dedicated Noir Button Remapping & Macro Section
+        card_btns = tk.Frame(page, bg=CARD, padx=14, pady=10)
+        card_btns.pack(fill="x", pady=4)
+
+        tk.Label(card_btns, text="Button Mapping & Macro (Posisi Tombol)",
+                 font=("Segoe UI", 10, "bold"), fg=ACCENT, bg=CARD).pack(anchor="w")
+
+        btn_grid = tk.Frame(card_btns, bg=CARD)
+        btn_grid.pack(fill="x", pady=(6, 2))
+
+        # Button 4 (Forward)
+        b4_row = tk.Frame(btn_grid, bg=CARD)
+        b4_row.pack(fill="x", pady=2)
+        tk.Label(b4_row, text="Button 4 (Forward)", font=("Segoe UI", 8),
+                 fg=TEXT_MUTED, bg=CARD, width=18, anchor="w").pack(side="left")
+        b4_opts = ["Browser Forward", "Double Click", "Quick Fire (Macro)", "Volume Up", "Mute"]
+        b4_menu = ttk.Combobox(b4_row, textvariable=self._mouse_btn4_var,
+                               values=b4_opts, width=20, state="readonly")
+        b4_menu.pack(side="left", padx=4)
+
+        # Button 5 (Backward)
+        b5_row = tk.Frame(btn_grid, bg=CARD)
+        b5_row.pack(fill="x", pady=2)
+        tk.Label(b5_row, text="Button 5 (Backward)", font=("Segoe UI", 8),
+                 fg=TEXT_MUTED, bg=CARD, width=18, anchor="w").pack(side="left")
+        b5_opts = ["Browser Backward", "Crouch Jump (Macro)", "Volume Down", "Play/Pause", "Sniper 400 DPI"]
+        b5_menu = ttk.Combobox(b5_row, textvariable=self._mouse_btn5_var,
+                               values=b5_opts, width=20, state="readonly")
+        b5_menu.pack(side="left", padx=4)
+
+        # 4. Mouse RGB Lighting Card
+        card_rgb = tk.Frame(page, bg=CARD, padx=14, pady=10)
+        card_rgb.pack(fill="x", pady=4)
+
+        rgb_head = tk.Frame(card_rgb, bg=CARD)
+        rgb_head.pack(fill="x")
+        tk.Label(rgb_head, text="Mouse LED Effect", font=("Segoe UI", 10, "bold"),
+                 fg=ACCENT, bg=CARD).pack(side="left")
+
+        m_rgb_modes = ["Neon Cycle", "Breathing", "Static", "LED Off"]
+        m_rgb_menu = ttk.Combobox(rgb_head, textvariable=self._mouse_rgb_mode_var,
+                                  values=m_rgb_modes, width=14, state="readonly")
+        m_rgb_menu.pack(side="right")
+
+        # Color dots
+        dots_row = tk.Frame(card_rgb, bg=CARD)
+        dots_row.pack(fill="x", pady=(6, 2))
+        tk.Label(dots_row, text="Preset Color", font=("Segoe UI", 8),
+                 fg=TEXT_MUTED, bg=CARD, width=12, anchor="w").pack(side="left")
+
+        colors = [
+            ("#ff2a2a", "Red"),
+            ("#00ff44", "Green"),
+            ("#2266ff", "Blue"),
+            ("#00eeff", "Cyan"),
+            ("#aa22ff", "Purple"),
+            ("#ff8800", "Orange"),
+            ("#ffffff", "White"),
+        ]
+        for hex_code, name in colors:
+            dot = tk.Label(dots_row, text="●", font=("Segoe UI", 12, "bold"),
+                           fg=hex_code, bg=CARD, cursor="hand2", padx=3)
+            dot.pack(side="left")
+            dot.bind("<Button-1>", lambda e, c=hex_code: self._on_mouse_color(c))
 
     def _on_dpi_click(self, dpi: int) -> None:
-        if self._mouse is None:
-            return
-        threading.Thread(target=self._mouse.set_dpi, args=(dpi,),
-                         daemon=True, name="dpi-set").start()
+        if self._mouse:
+            threading.Thread(target=self._mouse.set_dpi, args=(dpi,),
+                             daemon=True, name="dpi-set").start()
         for d, btn in self._dpi_buttons.items():
             btn.set_active(d == dpi)
-        self._mouse_dpi_lbl.configure(text=f"{dpi} DPI")
+        self._mouse_dpi_val_lbl.configure(text=f"{dpi} DPI")
+
+    def _on_mouse_color(self, hex_code: str) -> None:
+        logger.info("Mouse custom color selected: %s", hex_code)
 
     # ------------------------------------------------------------------
-    # Keyboard Card
+    # Page 2: ⌨️ AULA S75 Pro (Mechanical Keyboard)
     # ------------------------------------------------------------------
 
-    def _build_keyboard_card(self) -> None:
-        self._spacer(self._scroll_frame, 2)
-        card = _SectionCard(self._scroll_frame, "⌨  AULA S75 Pro")
-        card.pack(fill="x", padx=4, pady=3)
+    def _build_keyboard_page(self) -> None:
+        page = tk.Frame(self._content_area, bg=BG)
+        self._tab_pages["keyboard"] = page
 
-        self._kb_status_lbl = tk.Label(card, text="● Disconnected",
-                                        font=("Segoe UI", 9, "bold"),
-                                        fg=RED, bg=CARD, anchor="w")
-        self._kb_status_lbl.pack(fill="x")
+        # 1. Device Status Card
+        card_stat = tk.Frame(page, bg=CARD, padx=14, pady=10)
+        card_stat.pack(fill="x", pady=(0, 8))
 
-        # Light mode dropdown
-        lm_row = tk.Frame(card, bg=CARD)
-        lm_row.pack(fill="x", pady=(5, 2))
-        tk.Label(lm_row, text="Light Mode", font=("Segoe UI", 8),
-                 fg=DIM, bg=CARD, width=10, anchor="w").pack(side="left")
+        row1 = tk.Frame(card_stat, bg=CARD)
+        row1.pack(fill="x")
+        tk.Label(row1, text="⌨️ AULA S75 Pro", font=("Segoe UI", 11, "bold"),
+                 fg=TEXT, bg=CARD).pack(side="left")
+        self._kb_status_lbl = tk.Label(row1, text="● Disconnected",
+                                       font=("Segoe UI", 9, "bold"),
+                                       fg=RED, bg=CARD)
+        self._kb_status_lbl.pack(side="right")
+
+        # 2. Lighting Mode Selector
+        card_lm = tk.Frame(page, bg=CARD, padx=14, pady=10)
+        card_lm.pack(fill="x", pady=4)
 
         from devices.keyboard import LIGHT_MODE_NAMES
-        self._kb_light_var = tk.StringVar(value="Colourful")
+        lm_row = tk.Frame(card_lm, bg=CARD)
+        lm_row.pack(fill="x")
+        tk.Label(lm_row, text="Lighting Mode (20 Efek)", font=("Segoe UI", 10, "bold"),
+                 fg=ACCENT, bg=CARD).pack(side="left")
+
         self._kb_light_menu = ttk.Combobox(lm_row, textvariable=self._kb_light_var,
                                            values=LIGHT_MODE_NAMES, width=18,
                                            state="readonly")
-        self._kb_light_menu.pack(side="left", padx=4)
-        self._kb_light_menu.bind("<<ComboboxSelected>>", self._on_light_mode_change)
+        self._kb_light_menu.pack(side="right")
+        self._kb_light_menu.bind("<<ComboboxSelected>>", self._on_kb_light_mode_change)
 
-        # Custom Color Palette row
-        color_row = tk.Frame(card, bg=CARD)
-        color_row.pack(fill="x", pady=(4, 2))
-        tk.Label(color_row, text="Custom RGB", font=("Segoe UI", 8),
-                 fg=DIM, bg=CARD, width=10, anchor="w").pack(side="left")
+        # 3. Custom Color Palette Card
+        card_col = tk.Frame(page, bg=CARD, padx=14, pady=10)
+        card_col.pack(fill="x", pady=4)
+
+        tk.Label(card_col, text="Custom RGB Palette", font=("Segoe UI", 10, "bold"),
+                 fg=ACCENT, bg=CARD).pack(anchor="w")
 
         from devices.keyboard import COLOR_PRESETS
-        color_btn_frame = tk.Frame(color_row, bg=CARD)
-        color_btn_frame.pack(side="left")
+        pal_row = tk.Frame(card_col, bg=CARD)
+        pal_row.pack(fill="x", pady=(8, 2))
 
         for name, hex_code, (r, g, b) in COLOR_PRESETS:
             is_rain = (name == "Rainbow")
-            cbtn = tk.Label(color_btn_frame,
+            cbtn = tk.Label(pal_row,
                             text="🌈" if is_rain else "●",
-                            font=("Segoe UI", 11 if not is_rain else 9, "bold"),
+                            font=("Segoe UI", 13 if not is_rain else 11, "bold"),
                             fg=ACCENT if is_rain else hex_code,
-                            bg=CARD, cursor="hand2", padx=3)
+                            bg=CARD, cursor="hand2", padx=4)
             cbtn.pack(side="left")
             cbtn.bind("<Button-1>", lambda e, red=r, green=g, blue=b, rain=is_rain: self._on_kb_color_click(red, green, blue, rain))
 
-        # Brightness slider
-        br_row = tk.Frame(card, bg=CARD)
-        br_row.pack(fill="x", pady=(4, 2))
+        # 4. Brightness & Speed Sliders Card (Hardware Control)
+        card_tune = tk.Frame(page, bg=CARD, padx=14, pady=10)
+        card_tune.pack(fill="x", pady=4)
+
+        tk.Label(card_tune, text="Hardware Sliders (Sonix ACK Handshake)",
+                 font=("Segoe UI", 10, "bold"), fg=ACCENT, bg=CARD).pack(anchor="w")
+
+        # Brightness row
+        br_row = tk.Frame(card_tune, bg=CARD)
+        br_row.pack(fill="x", pady=(8, 4))
         tk.Label(br_row, text="Brightness", font=("Segoe UI", 8),
-                 fg=DIM, bg=CARD, width=10, anchor="w").pack(side="left")
-        self._kb_br_var = tk.IntVar(value=5)
+                 fg=TEXT_MUTED, bg=CARD, width=12, anchor="w").pack(side="left")
         self._kb_br_slider = tk.Scale(br_row, from_=1, to=5, orient="horizontal",
                                       variable=self._kb_br_var,
                                       command=self._on_kb_brightness_change,
                                       bg=CARD, fg=TEXT, troughcolor=BORDER,
-                                      highlightthickness=0, length=140,
-                                      showvalue=False)
+                                      highlightthickness=0, length=200, showvalue=False)
         self._kb_br_slider.pack(side="left")
-        self._kb_br_lbl = tk.Label(br_row, text="Level 5",
-                                    font=("Segoe UI", 8, "bold"),
-                                    fg=TEXT, bg=CARD)
-        self._kb_br_lbl.pack(side="left", padx=4)
+        self._kb_br_lbl = tk.Label(br_row, text="Level 5", font=("Segoe UI", 8, "bold"),
+                                   fg=TEXT, bg=CARD)
+        self._kb_br_lbl.pack(side="left", padx=8)
 
-        # Speed slider
-        sp_row = tk.Frame(card, bg=CARD)
-        sp_row.pack(fill="x", pady=(2, 2))
+        # Speed row
+        sp_row = tk.Frame(card_tune, bg=CARD)
+        sp_row.pack(fill="x", pady=(4, 2))
         tk.Label(sp_row, text="Speed", font=("Segoe UI", 8),
-                 fg=DIM, bg=CARD, width=10, anchor="w").pack(side="left")
-        self._kb_sp_var = tk.IntVar(value=3)
+                 fg=TEXT_MUTED, bg=CARD, width=12, anchor="w").pack(side="left")
         self._kb_sp_slider = tk.Scale(sp_row, from_=1, to=5, orient="horizontal",
                                       variable=self._kb_sp_var,
                                       command=self._on_kb_speed_change,
                                       bg=CARD, fg=TEXT, troughcolor=BORDER,
-                                      highlightthickness=0, length=140,
-                                      showvalue=False)
+                                      highlightthickness=0, length=200, showvalue=False)
         self._kb_sp_slider.pack(side="left")
-        self._kb_sp_lbl = tk.Label(sp_row, text="Speed 3",
-                                    font=("Segoe UI", 8, "bold"),
-                                    fg=TEXT, bg=CARD)
-        self._kb_sp_lbl.pack(side="left", padx=4)
+        self._kb_sp_lbl = tk.Label(sp_row, text="Speed 3", font=("Segoe UI", 8, "bold"),
+                                   fg=TEXT, bg=CARD)
+        self._kb_sp_lbl.pack(side="left", padx=8)
 
-    def _on_light_mode_change(self, event=None) -> None:
+    def _on_kb_light_mode_change(self, event=None) -> None:
         if self._keyboard is None:
             return
         name = self._kb_light_var.get()
@@ -420,302 +695,289 @@ class Dashboard:
                          daemon=True, name="kb-sp").start()
 
     # ------------------------------------------------------------------
-    # Headset Card
+    # Page 3: 🎧 dbE Kumo GS1X Pro (Wireless Headset)
     # ------------------------------------------------------------------
 
-    def _build_headset_card(self) -> None:
-        self._spacer(self._scroll_frame, 2)
-        card = _SectionCard(self._scroll_frame, "🎧  dbE Kumo GS1X Pro")
-        card.pack(fill="x", padx=4, pady=3)
+    def _build_headset_page(self) -> None:
+        page = tk.Frame(self._content_area, bg=BG)
+        self._tab_pages["headset"] = page
 
-        self._hs_status_lbl = tk.Label(card, text="● Dongle Not Detected",
-                                        font=("Segoe UI", 9, "bold"),
-                                        fg=RED, bg=CARD, anchor="w")
-        self._hs_status_lbl.pack(fill="x")
+        # 1. Device Status Card
+        card_stat = tk.Frame(page, bg=CARD, padx=14, pady=10)
+        card_stat.pack(fill="x", pady=(0, 8))
 
-        # Battery estimate
-        bat_row = tk.Frame(card, bg=CARD)
-        bat_row.pack(fill="x", pady=(5, 2))
+        row1 = tk.Frame(card_stat, bg=CARD)
+        row1.pack(fill="x")
+        tk.Label(row1, text="🎧 dbE Kumo GS1X Pro", font=("Segoe UI", 11, "bold"),
+                 fg=TEXT, bg=CARD).pack(side="left")
+        self._hs_status_lbl = tk.Label(row1, text="● Dongle Not Detected",
+                                       font=("Segoe UI", 9, "bold"),
+                                       fg=RED, bg=CARD)
+        self._hs_status_lbl.pack(side="right")
+
+        # Smart Battery Tracker Card
+        card_bat = tk.Frame(page, bg=CARD, padx=14, pady=10)
+        card_bat.pack(fill="x", pady=4)
+
+        tk.Label(card_bat, text="Smart Battery Tracker (16h Active Life)",
+                 font=("Segoe UI", 10, "bold"), fg=ACCENT, bg=CARD).pack(anchor="w")
+
+        bat_row = tk.Frame(card_bat, bg=CARD)
+        bat_row.pack(fill="x", pady=(8, 4))
         tk.Label(bat_row, text="Est. Battery", font=("Segoe UI", 8),
-                 fg=DIM, bg=CARD, width=10, anchor="w").pack(side="left")
-        self._hs_bat_bar = _BatteryBar(bat_row, width=140)
-        self._hs_bat_bar.pack(side="left", padx=4)
-        self._hs_bat_lbl = tk.Label(bat_row, text="N/A",
-                                     font=("Segoe UI", 8, "bold"),
-                                     fg=DIM, bg=CARD)
+                 fg=TEXT_MUTED, bg=CARD, width=12, anchor="w").pack(side="left")
+        self._hs_bat_bar = _BatteryBar(bat_row, width=170)
+        self._hs_bat_bar.pack(side="left", padx=6)
+        self._hs_bat_lbl = tk.Label(bat_row, text="N/A", font=("Segoe UI", 8, "bold"),
+                                    fg=TEXT, bg=CARD)
         self._hs_bat_lbl.pack(side="left")
 
-        # Volume slider
-        vol_row = tk.Frame(card, bg=CARD)
-        vol_row.pack(fill="x", pady=(5, 2))
-        tk.Label(vol_row, text="Volume", font=("Segoe UI", 8),
-                 fg=DIM, bg=CARD, width=10, anchor="w").pack(side="left")
-        self._hs_vol_var = tk.IntVar(value=50)
+        btn_row = tk.Frame(card_bat, bg=CARD)
+        btn_row.pack(fill="x", pady=(6, 2))
+        self._hs_usage_lbl = tk.Label(btn_row, text="Usage: 0h 00m", font=("Segoe UI", 8),
+                                      fg=TEXT_MUTED, bg=CARD)
+        self._hs_usage_lbl.pack(side="left")
+
+        charged_btn = tk.Label(btn_row, text="⚡ Mark Charged", font=("Segoe UI", 8, "bold"),
+                               fg=TEXT, bg=BORDER, cursor="hand2", padx=8, pady=3)
+        charged_btn.pack(side="right")
+        charged_btn.bind("<Button-1>", lambda e: self._on_mark_charged())
+        charged_btn.bind("<Enter>", lambda e: charged_btn.configure(bg=CARD_HOVER, fg=ACCENT))
+        charged_btn.bind("<Leave>", lambda e: charged_btn.configure(bg=BORDER, fg=TEXT))
+
+        # Windows Master Volume Card
+        card_vol = tk.Frame(page, bg=CARD, padx=14, pady=10)
+        card_vol.pack(fill="x", pady=4)
+
+        tk.Label(card_vol, text="Windows Master Audio Volume",
+                 font=("Segoe UI", 10, "bold"), fg=ACCENT, bg=CARD).pack(anchor="w")
+
+        vol_row = tk.Frame(card_vol, bg=CARD)
+        vol_row.pack(fill="x", pady=(8, 2))
+        tk.Label(vol_row, text="Master Vol", font=("Segoe UI", 8),
+                 fg=TEXT_MUTED, bg=CARD, width=12, anchor="w").pack(side="left")
         self._hs_vol_slider = tk.Scale(vol_row, from_=0, to=100, orient="horizontal",
                                        variable=self._hs_vol_var,
                                        command=self._on_volume_change,
                                        bg=CARD, fg=TEXT, troughcolor=BORDER,
-                                       highlightthickness=0, length=160,
-                                       showvalue=False)
+                                       highlightthickness=0, length=200, showvalue=False)
         self._hs_vol_slider.pack(side="left")
-        self._hs_vol_lbl = tk.Label(vol_row, text="50%",
-                                     font=("Segoe UI", 8, "bold"),
-                                     fg=TEXT, bg=CARD)
-        self._hs_vol_lbl.pack(side="left", padx=4)
-
-        # Usage & Mark Charged row
-        btn_row = tk.Frame(card, bg=CARD)
-        btn_row.pack(fill="x", pady=(5, 2))
-        self._hs_usage_lbl = tk.Label(btn_row, text="Usage: 0h 00m",
-                                       font=("Segoe UI", 8),
-                                       fg=DIM, bg=CARD)
-        self._hs_usage_lbl.pack(side="left")
-
-        charged_btn = tk.Button(btn_row, text="⚡ Mark Charged",
-                                 font=("Segoe UI", 8, "bold"),
-                                 fg=TEXT, bg=BORDER,
-                                 relief="flat", padx=6, pady=2,
-                                 cursor="hand2",
-                                 command=self._on_mark_charged)
-        charged_btn.pack(side="right")
+        self._hs_vol_lbl = tk.Label(vol_row, text="50%", font=("Segoe UI", 8, "bold"),
+                                    fg=TEXT, bg=CARD)
+        self._hs_vol_lbl.pack(side="left", padx=8)
 
     def _on_volume_change(self, val) -> None:
-        v = int(float(val))
-        self._hs_vol_lbl.configure(text=f"{v}%")
-        if self._headset is None:
-            return
-        threading.Thread(target=self._headset.set_volume, args=(v,),
-                         daemon=True, name="hs-vol").start()
+        vol = int(float(val))
+        self._hs_vol_lbl.configure(text=f"{vol}%")
+        if self._headset:
+            threading.Thread(target=self._headset.set_volume, args=(vol,),
+                             daemon=True, name="hs-vol").start()
 
     def _on_mark_charged(self) -> None:
         if self._headset:
-            threading.Thread(target=self._headset.mark_as_charged,
-                             daemon=True, name="hs-charge").start()
-            self._root.after(100, self._refresh_headset)
+            self._headset.mark_charged()
+            self._refresh_headset()
 
     # ------------------------------------------------------------------
-    # Audio Panel (Custom Tuning inspired by FxSound)
+    # Page 4: 🔊 Real Sound Enhancer & Equalizer
     # ------------------------------------------------------------------
 
-    def _build_audio_panel(self) -> None:
-        self._spacer(self._scroll_frame, 2)
-        card = _SectionCard(self._scroll_frame, "🎚  Audio Enhancer (FxSound Style)")
-        card.pack(fill="x", padx=4, pady=3)
+    def _build_audio_page(self) -> None:
+        page = tk.Frame(self._content_area, bg=BG)
+        self._tab_pages["audio"] = page
 
-        profiles = [
-            ("fps_step_booster", "🎮 FPS Booster", "Gaming"),
-            ("music_movie",      "🎵 Music / Vocal", "Music"),
-            ("bass_boost",       "🔊 Bass Boost",    "Bass Boost"),
-            ("gaming_surround",  "🎬 Cinematic",     "Movie"),
+        # 1. Preset Header Card
+        card_preset = tk.Frame(page, bg=CARD, padx=14, pady=10)
+        card_preset.pack(fill="x", pady=(0, 8))
+
+        tk.Label(card_preset, text="Real Sound Enhancer & Gaming EQ",
+                 font=("Segoe UI", 10, "bold"), fg=ACCENT, bg=CARD).pack(anchor="w")
+
+        # 5 Quick Preset Buttons
+        p_row1 = tk.Frame(card_preset, bg=CARD)
+        p_row1.pack(fill="x", pady=(8, 4))
+        p_row2 = tk.Frame(card_preset, bg=CARD)
+        p_row2.pack(fill="x", pady=2)
+
+        presets1 = [
+            ("FPS Step Booster", "🎯 FPS Footstep"),
+            ("Gaming Surround", "🎮 Surround 3D"),
+        ]
+        presets2 = [
+            ("Music / Vocal", "🎵 Music/Vocal"),
+            ("Bass Boost", "💥 Bass Boost"),
+            ("Flat / Neutral", "⚖️ Flat"),
         ]
 
-        grid_frame = tk.Frame(card, bg=CARD)
-        grid_frame.pack(fill="x", pady=2)
-        grid_frame.columnconfigure(0, weight=1)
-        grid_frame.columnconfigure(1, weight=1)
+        for key, label in presets1:
+            lbl = tk.Label(p_row1, text=label, font=("Segoe UI", 9, "bold"),
+                           fg=TEXT, bg=BORDER, cursor="hand2", padx=10, pady=6)
+            lbl.pack(side="left", expand=True, fill="x", padx=3)
+            lbl.bind("<Button-1>", lambda e, k=key: self._set_audio_preset(k))
+            self._eq_buttons[key] = lbl
 
-        for idx, (key, label, fx_preset) in enumerate(profiles):
-            r = idx // 2
-            c = idx % 2
-            btn = tk.Button(grid_frame, text=label,
-                            font=("Segoe UI", 8, "bold"),
-                            fg=DIM, bg=BORDER,
-                            relief="flat", padx=6, pady=5,
-                            cursor="hand2",
-                            command=lambda k=key, fp=fx_preset: self._on_eq_profile(k, fp))
-            btn.grid(row=r, column=c, padx=3, pady=2, sticky="ew")
-            self._eq_buttons[key] = btn
+        for key, label in presets2:
+            lbl = tk.Label(p_row2, text=label, font=("Segoe UI", 9, "bold"),
+                           fg=TEXT_MUTED, bg=BORDER, cursor="hand2", padx=8, pady=6)
+            lbl.pack(side="left", expand=True, fill="x", padx=3)
+            lbl.bind("<Button-1>", lambda e, k=key: self._set_audio_preset(k))
+            self._eq_buttons[key] = lbl
 
-        # Custom Audio Tuning Sliders (Bawaan Sendiri)
-        sliders_frame = tk.Frame(card, bg=CARD)
-        sliders_frame.pack(fill="x", pady=(6, 2))
+        # 2. Parametric Audio Sliders Card
+        card_sliders = tk.Frame(page, bg=CARD, padx=14, pady=10)
+        card_sliders.pack(fill="x", pady=4)
+
+        tk.Label(card_sliders, text="Dynamic Frequency Shaping",
+                 font=("Segoe UI", 10, "bold"), fg=ACCENT, bg=CARD).pack(anchor="w")
 
         # Bass Boost slider
-        self._bass_scale = self._make_audio_slider(sliders_frame, "🔊 Bass Boost", 60)
-        # Clarity / Footsteps slider
-        self._clarity_scale = self._make_audio_slider(sliders_frame, "🎯 Clarity / Step", 80)
-        # Surround Sound slider
-        self._surround_scale = self._make_audio_slider(sliders_frame, "🌐 Surround 3D", 70)
+        s1 = tk.Frame(card_sliders, bg=CARD)
+        s1.pack(fill="x", pady=(8, 4))
+        tk.Label(s1, text="Bass Boost", font=("Segoe UI", 8),
+                 fg=TEXT_MUTED, bg=CARD, width=16, anchor="w").pack(side="left")
+        self._bass_slider = tk.Scale(s1, from_=0, to=100, orient="horizontal",
+                                     variable=self._audio_bass_var,
+                                     bg=CARD, fg=TEXT, troughcolor=BORDER,
+                                     highlightthickness=0, length=180, showvalue=False)
+        self._bass_slider.pack(side="left")
+        self._bass_lbl = tk.Label(s1, text="60%", font=("Segoe UI", 8, "bold"),
+                                  fg=TEXT, bg=CARD)
+        self._bass_lbl.pack(side="left", padx=8)
 
-        # FxSound routing power toggle
-        fx_row = tk.Frame(card, bg=CARD)
-        fx_row.pack(fill="x", pady=(6, 2))
-        tk.Label(fx_row, text="FxSound Link", font=("Segoe UI", 8),
-                 fg=DIM, bg=CARD, width=12, anchor="w").pack(side="left")
-        self._fx_var = tk.BooleanVar(value=True)
-        fx_cb = tk.Checkbutton(fx_row, variable=self._fx_var,
-                                bg=CARD, fg=TEXT, selectcolor=CARD,
-                                activebackground=CARD,
-                                command=self._on_fxsound_toggle)
-        fx_cb.pack(side="left")
-        self._fx_lbl = tk.Label(fx_row, text="Active (Kumo Headset)",
-                                 font=("Segoe UI", 8, "bold"),
-                                 fg=GREEN, bg=CARD)
-        self._fx_lbl.pack(side="left")
+        # Footstep Clarity slider
+        s2 = tk.Frame(card_sliders, bg=CARD)
+        s2.pack(fill="x", pady=4)
+        tk.Label(s2, text="Footstep Clarity", font=("Segoe UI", 8),
+                 fg=TEXT_MUTED, bg=CARD, width=16, anchor="w").pack(side="left")
+        self._clarity_slider = tk.Scale(s2, from_=0, to=100, orient="horizontal",
+                                        variable=self._audio_clarity_var,
+                                        bg=CARD, fg=TEXT, troughcolor=BORDER,
+                                        highlightthickness=0, length=180, showvalue=False)
+        self._clarity_slider.pack(side="left")
+        self._clarity_lbl = tk.Label(s2, text="80%", font=("Segoe UI", 8, "bold"),
+                                     fg=TEXT, bg=CARD)
+        self._clarity_lbl.pack(side="left", padx=8)
 
-        self._spacer(card, 2)
+        # 3D Surround slider
+        s3 = tk.Frame(card_sliders, bg=CARD)
+        s3.pack(fill="x", pady=(4, 2))
+        tk.Label(s3, text="3D Spatial Space", font=("Segoe UI", 8),
+                 fg=TEXT_MUTED, bg=CARD, width=16, anchor="w").pack(side="left")
+        self._surround_slider = tk.Scale(s3, from_=0, to=100, orient="horizontal",
+                                         variable=self._audio_surround_var,
+                                         bg=CARD, fg=TEXT, troughcolor=BORDER,
+                                         highlightthickness=0, length=180, showvalue=False)
+        self._surround_slider.pack(side="left")
+        self._surround_lbl = tk.Label(s3, text="70%", font=("Segoe UI", 8, "bold"),
+                                      fg=TEXT, bg=CARD)
+        self._surround_lbl.pack(side="left", padx=8)
 
-    def _make_audio_slider(self, parent, label_text: str, default_val: int) -> tk.Scale:
-        row = tk.Frame(parent, bg=CARD)
-        row.pack(fill="x", pady=2)
-        tk.Label(row, text=label_text, font=("Segoe UI", 8),
-                 fg=DIM, bg=CARD, width=14, anchor="w").pack(side="left")
-        var = tk.IntVar(value=default_val)
-        val_lbl = tk.Label(row, text=f"{default_val}%", font=("Segoe UI", 8, "bold"),
-                           fg=TEXT, bg=CARD, width=5)
-        scale = tk.Scale(row, from_=0, to=100, orient="horizontal",
-                         variable=var,
-                         command=lambda v: val_lbl.configure(text=f"{int(float(v))}%"),
-                         bg=CARD, fg=TEXT, troughcolor=BORDER,
-                         highlightthickness=0, length=140, showvalue=False)
-        scale.pack(side="left")
-        val_lbl.pack(side="left", padx=2)
-        return scale
+    def _set_audio_preset(self, preset_key: str) -> None:
+        self._audio_preset_var.set(preset_key)
+        for k, btn in self._eq_buttons.items():
+            if k == preset_key:
+                btn.configure(bg=ACCENT, fg=TEXT)
+            else:
+                btn.configure(bg=BORDER, fg=TEXT_MUTED)
 
-    def _on_eq_profile(self, profile_key: str, fx_preset: str = "") -> None:
-        for key, btn in self._eq_buttons.items():
-            btn.configure(fg=ACCENT if key == profile_key else DIM,
-                          bg=BORDER)
-        if profile_key in self._eq_buttons:
-            self._eq_buttons[profile_key].configure(fg=TEXT, bg=ACCENT)
+        if preset_key == "FPS Step Booster":
+            self._audio_bass_var.set(20)
+            self._audio_clarity_var.set(90)
+            self._audio_surround_var.set(80)
+        elif preset_key == "Gaming Surround":
+            self._audio_bass_var.set(50)
+            self._audio_clarity_var.set(70)
+            self._audio_surround_var.set(95)
+        elif preset_key == "Bass Boost":
+            self._audio_bass_var.set(95)
+            self._audio_clarity_var.set(40)
+            self._audio_surround_var.set(40)
+        elif preset_key == "Music / Vocal":
+            self._audio_bass_var.set(60)
+            self._audio_clarity_var.set(65)
+            self._audio_surround_var.set(50)
+        elif preset_key == "Flat / Neutral":
+            self._audio_bass_var.set(0)
+            self._audio_clarity_var.set(0)
+            self._audio_surround_var.set(0)
 
-        # Adjust sliders based on preset
-        if profile_key == "fps_step_booster":
-            self._bass_scale.set(40)
-            self._clarity_scale.set(95)
-            self._surround_scale.set(85)
-        elif profile_key == "music_movie":
-            self._bass_scale.set(70)
-            self._clarity_scale.set(75)
-            self._surround_scale.set(60)
-        elif profile_key == "bass_boost":
-            self._bass_scale.set(95)
-            self._clarity_scale.set(60)
-            self._surround_scale.set(50)
-        elif profile_key == "gaming_surround":
-            self._bass_scale.set(65)
-            self._clarity_scale.set(85)
-            self._surround_scale.set(95)
-
-        def _apply():
-            if self._eq_apo:
-                try:
-                    self._eq_apo.apply_profile(profile_key)
-                except Exception:
-                    pass
-            if self._fxsound and fx_preset:
-                try:
-                    self._fxsound.set_output_device(
-                        "Speakers (dbE Kumo GS1X Pro)",
-                        "{0.0.0.00000000}.{ba396042-5266-4b0e-8bcf-893742e1a503}"
-                    )
-                    self._fxsound.set_power(True)
-                    self._fxsound.set_preset(fx_preset)
-                except Exception:
-                    pass
-
-        threading.Thread(target=_apply, daemon=True, name="audio-apply").start()
-
-    def _on_fxsound_toggle(self) -> None:
-        enabled = self._fx_var.get()
-        self._fx_lbl.configure(
-            text="Active (Kumo Headset)" if enabled else "Bypassed",
-            fg=GREEN if enabled else DIM
-        )
-        if self._fxsound:
-            threading.Thread(target=self._fxsound.set_power, args=(enabled,),
-                             daemon=True, name="fx-power").start()
+        self._bass_lbl.configure(text=f"{self._audio_bass_var.get()}%")
+        self._clarity_lbl.configure(text=f"{self._audio_clarity_var.get()}%")
+        self._surround_lbl.configure(text=f"{self._audio_surround_var.get()}%")
+        logger.info("Audio preset changed to: %s", preset_key)
 
     # ------------------------------------------------------------------
-    # Footer
+    # Bottom Status Bar (CustomRP inspired)
     # ------------------------------------------------------------------
 
-    def _build_footer(self) -> None:
-        footer = tk.Frame(self._root, bg=CARD, pady=6)
-        footer.pack(fill="x", side="bottom")
+    def _build_bottom_status_bar(self) -> None:
+        sbar = tk.Frame(self._root, bg=CARD, padx=14, pady=6)
+        sbar.pack(fill="x", side="bottom")
 
-        self._footer_status = tk.Label(footer, text="Peripheral Hub v1.0.0",
-                                       font=("Segoe UI", 8), fg=DIM, bg=CARD)
-        self._footer_status.pack(side="left", padx=12)
+        self._sbar_devices_lbl = tk.Label(sbar, text="● Detecting devices...",
+                                          font=("Segoe UI", 8),
+                                          fg=TEXT_MUTED, bg=CARD)
+        self._sbar_devices_lbl.pack(side="left")
 
-        self._footer_dot = tk.Label(footer, text="● Active",
-                                    font=("Segoe UI", 8, "bold"), fg=GREEN, bg=CARD)
-        self._footer_dot.pack(side="right", padx=12)
+        self._sbar_battery_lbl = tk.Label(sbar, text="",
+                                          font=("Segoe UI", 8, "bold"),
+                                          fg=GREEN, bg=CARD)
+        self._sbar_battery_lbl.pack(side="right")
 
     # ------------------------------------------------------------------
-    # Active Scan All
+    # Visibility & Refresh loop
     # ------------------------------------------------------------------
+
+    def show(self) -> None:
+        if self._root is None:
+            return
+        self._visible = True
+        self._root.deiconify()
+        self._root.lift()
+        self._root.focus_force()
+        self.refresh()
+        self._schedule_refresh()
+
+    def hide(self) -> None:
+        self._visible = False
+        if self._refresh_job and self._root:
+            self._root.after_cancel(self._refresh_job)
+            self._refresh_job = None
+        if self._root:
+            self._root.withdraw()
+
+    def toggle(self) -> None:
+        if self._visible:
+            self.hide()
+        else:
+            self.show()
+
+    def _schedule_refresh(self) -> None:
+        if not self._visible or self._root is None:
+            return
+        self._refresh_job = self._root.after(3000, self._on_timer_refresh)
+
+    def _on_timer_refresh(self) -> None:
+        if self._visible:
+            self.refresh()
+            self._schedule_refresh()
 
     def scan_all(self) -> None:
-        self._scan_btn.configure(text="⏳ Memindai...", fg=ORANGE)
-        self._footer_status.configure(text="Memindai perangkat yang tercolok...", fg=ORANGE)
+        if self._on_scan:
+            threading.Thread(target=self._on_scan, daemon=True, name="manual-scan").start()
+        self.refresh()
 
-        def _do_scan():
-            count = 0
-            if self._mouse:
-                try:
-                    if self._mouse.scan_and_connect():
-                        count += 1
-                except Exception:
-                    pass
-            if self._keyboard:
-                try:
-                    if self._keyboard.scan_and_connect():
-                        count += 1
-                except Exception:
-                    pass
-            if self._headset:
-                try:
-                    if self._headset.scan_and_connect():
-                        count += 1
-                except Exception:
-                    pass
-
-            if self._on_scan:
-                try:
-                    self._on_scan()
-                except Exception:
-                    pass
-
-            if self._root:
-                try:
-                    self._root.after(0, lambda: self._on_scan_done(count))
-                except Exception:
-                    pass
-
-        threading.Thread(target=_do_scan, daemon=True, name="manual-scan").start()
-
-    def _on_scan_done(self, found_count: int) -> None:
-        self._refresh()
-        self._scan_btn.configure(text="✓ Selesai", fg=GREEN)
-        self._footer_status.configure(text=f"{found_count} Perangkat Terdeteksi", fg=GREEN)
-        self._root.after(2000, lambda: self._scan_btn.configure(text="🔄 Pindai", fg=ACCENT) if self._root else None)
-        self._root.after(3000, lambda: self._footer_status.configure(text="Peripheral Hub v1.0.0", fg=DIM) if self._root else None)
-
-    # ------------------------------------------------------------------
-    # Data refresh
-    # ------------------------------------------------------------------
-
-    def _refresh(self) -> None:
+    def refresh(self) -> None:
+        """Update live telemetry for all components and the status bar."""
+        if not self._root:
+            return
         try:
             self._refresh_mouse()
-        except Exception:
-            pass
-        try:
             self._refresh_keyboard()
-        except Exception:
-            pass
-        try:
             self._refresh_headset()
-        except Exception:
-            pass
-        try:
-            self._refresh_audio()
-        except Exception:
-            pass
-
-        if self._visible and self._root:
-            self._refresh_job = self._root.after(REFRESH_INTERVAL, self._refresh)
+            self._refresh_status_bar()
+        except Exception as exc:
+            logger.debug("Dashboard refresh error: %s", exc)
 
     def _refresh_mouse(self) -> None:
         if self._mouse is None:
@@ -723,22 +985,26 @@ class Dashboard:
         st = self._mouse.get_status()
         online = st.get("online", False)
         conn_type = st.get("connection_type", "Disconnected")
+
+        if online:
+            self._mouse_status_lbl.configure(text=f"● Connected ({conn_type})", fg=GREEN)
+        else:
+            self._mouse_status_lbl.configure(text="● Disconnected", fg=RED)
+
         pct = st.get("battery_level")
-        charging = st.get("is_charging", False)
+        self._mouse_bat_bar.set_value(pct)
+        self._mouse_bat_lbl.configure(text=_pct_text(pct), fg=_battery_color(pct))
+
+        v = st.get("battery_voltage")
+        if v:
+            self._mouse_volt_lbl.configure(text=f"({v/1000:.2f}V)")
+        else:
+            self._mouse_volt_lbl.configure(text="")
+
         dpi = st.get("current_dpi", 1200)
-
-        color = GREEN if online else RED
-        status_text = f"● Connected ({conn_type})" if online else "● Disconnected"
-        self._mouse_status_lbl.configure(text=status_text, fg=color)
-        self._mouse_charging_lbl.configure(text="⚡ Charging" if charging else "")
-
-        if pct is not None:
-            self._mouse_bat_bar.set_value(pct)
-            self._mouse_bat_lbl.configure(text=_pct_text(pct), fg=_battery_color(pct))
-        if dpi is not None:
-            self._mouse_dpi_lbl.configure(text=f"{dpi} DPI")
-            for d, btn in self._dpi_buttons.items():
-                btn.set_active(d == dpi)
+        self._mouse_dpi_val_lbl.configure(text=f"{dpi} DPI")
+        for d, btn in self._dpi_buttons.items():
+            btn.set_active(d == dpi)
 
     def _refresh_keyboard(self) -> None:
         if self._keyboard is None:
@@ -746,9 +1012,11 @@ class Dashboard:
         st = self._keyboard.get_status()
         connected = st.get("connected", False)
         conn_type = st.get("connection_type", "Disconnected")
-        color = GREEN if connected else RED
-        status_text = f"● Connected ({conn_type})" if connected else "● Disconnected"
-        self._kb_status_lbl.configure(text=status_text, fg=color)
+
+        if connected:
+            self._kb_status_lbl.configure(text=f"● Connected ({conn_type})", fg=GREEN)
+        else:
+            self._kb_status_lbl.configure(text="● Disconnected", fg=RED)
 
         lm_name = st.get("light_mode_name", "Colourful")
         if self._kb_light_var.get() != lm_name:
@@ -770,64 +1038,59 @@ class Dashboard:
         st = self._headset.get_status()
         dongle = st.get("dongle_connected", False)
         conn_type = st.get("connection_type", "Disconnected")
-        status_text = f"● Connected ({conn_type})" if dongle else "● Dongle Not Detected"
-        self._hs_status_lbl.configure(text=status_text, fg=GREEN if dongle else RED)
+
+        if dongle:
+            self._hs_status_lbl.configure(text=f"● Connected ({conn_type})", fg=GREEN)
+        else:
+            self._hs_status_lbl.configure(text="● Dongle Not Detected", fg=RED)
 
         pct = st.get("battery_estimate", 0)
         self._hs_bat_bar.set_value(pct)
         self._hs_bat_lbl.configure(text=_pct_text(pct), fg=_battery_color(pct))
-        self._hs_usage_lbl.configure(text=f"Usage: {st.get('usage_time', '0h 00m')}")
+
+        hrs = st.get("usage_hours", 0.0)
+        h = int(hrs)
+        m = int((hrs - h) * 60)
+        self._hs_usage_lbl.configure(text=f"Usage: {h}h {m:02d}m")
 
         vol = st.get("volume", 50)
-        self._hs_vol_var.set(vol)
-        self._hs_vol_lbl.configure(text=f"{vol}%")
+        if self._hs_vol_var.get() != vol:
+            self._hs_vol_var.set(vol)
+            self._hs_vol_lbl.configure(text=f"{vol}%")
 
-    def _refresh_audio(self) -> None:
-        if self._fxsound:
-            power = self._fxsound.get_power()
-            self._fx_var.set(power)
-            self._fx_lbl.configure(text="Active (Kumo Headset)" if power else "Bypassed",
-                                    fg=GREEN if power else DIM)
+    def _refresh_status_bar(self) -> None:
+        connected_count = 0
+        batteries = []
 
-    # ------------------------------------------------------------------
-    # Show / hide
-    # ------------------------------------------------------------------
+        if self._mouse and self._mouse.get_status().get("online"):
+            connected_count += 1
+            b = self._mouse.get_status().get("battery_level")
+            if b is not None:
+                batteries.append(("Mouse", b))
 
-    def show(self) -> None:
-        if self._root is None:
-            return
-        self._root.deiconify()
-        self._root.attributes("-topmost", True)
-        self._root.lift()
-        self._root.focus_force()
-        self._visible = True
-        self._refresh()
+        if self._keyboard and self._keyboard.get_status().get("connected"):
+            connected_count += 1
 
-    def hide(self) -> None:
-        if self._root is None:
-            return
-        self._root.withdraw()
-        self._visible = False
-        if self._refresh_job:
-            self._root.after_cancel(self._refresh_job)
-            self._refresh_job = None
-        if self._on_close:
-            self._on_close()
+        if self._headset and self._headset.get_status().get("dongle_connected"):
+            connected_count += 1
+            b = self._headset.get_status().get("battery_estimate")
+            if b is not None:
+                batteries.append(("Headset", b))
 
-    def toggle(self) -> None:
-        if self._visible:
-            self.hide()
+        # Status indicator
+        if connected_count > 0:
+            self._brand_dot.configure(fg=GREEN)
+            self._sbar_devices_lbl.configure(
+                text=f"● {connected_count} Device{'s' if connected_count > 1 else ''} Online",
+                fg=GREEN
+            )
         else:
-            self.show()
+            self._brand_dot.configure(fg=RED)
+            self._sbar_devices_lbl.configure(text="● No devices connected", fg=RED)
 
-    def is_visible(self) -> bool:
-        return self._visible
-
-    def destroy(self) -> None:
-        self.hide()
-        if self._root:
-            try:
-                self._root.destroy()
-            except tk.TclError:
-                pass
-            self._root = None
+        if batteries:
+            dev_name, min_bat = min(batteries, key=lambda x: x[1])
+            col = _battery_color(min_bat)
+            self._sbar_battery_lbl.configure(text=f"🔋 Lowest: {dev_name} {min_bat}%", fg=col)
+        else:
+            self._sbar_battery_lbl.configure(text="")

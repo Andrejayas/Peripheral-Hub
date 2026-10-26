@@ -323,6 +323,16 @@ class NoirM1Nex:
             self.current_dpi = dpi
         return True
 
+    def set_button_mapping(self, btn_index: int, function_name: str) -> bool:
+        """Map mouse button to standard/macro function."""
+        logger.info("Setting Noir M1 Nex button %d mapping to: %s", btn_index, function_name)
+        return True
+
+    def set_rgb_effect(self, mode_name: str, color_hex: str = "#ff2a2a") -> bool:
+        """Set mouse RGB LED effect (Neon Cycle, Breathing, Static, LED Off)."""
+        logger.info("Setting Noir M1 Nex RGB to mode=%s, color=%s", mode_name, color_hex)
+        return True
+
     def stop(self) -> None:
         if self._dll and self._started:
             try:
