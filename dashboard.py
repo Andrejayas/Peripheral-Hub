@@ -928,6 +928,10 @@ class Dashboard:
     # Visibility & Refresh loop
     # ------------------------------------------------------------------
 
+    def is_visible(self) -> bool:
+        """Return True if dashboard window is currently open/visible."""
+        return self._visible
+
     def show(self) -> None:
         if self._root is None:
             return
@@ -951,6 +955,16 @@ class Dashboard:
             self.hide()
         else:
             self.show()
+
+    def destroy(self) -> None:
+        """Cleanly destroy window and cancel pending callbacks."""
+        self.hide()
+        if self._root:
+            try:
+                self._root.destroy()
+            except Exception:
+                pass
+            self._root = None
 
     def _schedule_refresh(self) -> None:
         if not self._visible or self._root is None:
